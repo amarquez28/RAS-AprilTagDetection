@@ -1,9 +1,11 @@
 import cv2
 from pyapriltags import Detector
 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
 if not cap.isOpened():
     raise RuntimeError("Cannot open camera")
+else:
+    print("camera is working")
 
 at_detector = Detector(searchpath=['apriltags'],
                         families='tag36h11',
@@ -18,6 +20,7 @@ try:
     while True:
         ret, frame = cap.read()
         if not ret:
+            print("Failed to read frame from camera")
             break
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
