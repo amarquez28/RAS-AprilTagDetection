@@ -2,6 +2,11 @@ import cv2
 from pyapriltags import Detector
 
 cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+
+# Set resolution explicitly; required for many Pi cameras to start streaming
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
 if not cap.isOpened():
     raise RuntimeError("Cannot open camera")
 else:
