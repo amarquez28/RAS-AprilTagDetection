@@ -1,7 +1,7 @@
 import cv2
 from pyapriltags import Detector
 
-cap = cv2.videoCapture(0)
+cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     raise RuntimeError("Cannot open camera")
 
@@ -16,7 +16,7 @@ at_detector = Detector(searchpath=['apriltags'],
 
 try:
     while True:
-        ret, fram = cap.read()
+        ret, frame = cap.read()
         if not ret:
             break
         
@@ -40,14 +40,14 @@ try:
 
             #center
             cX, cY = r.center.astype(int)
-            cv2.circle(frame, (cX, cY), 4 (0,0,255), -1)
+            cv2.circle(frame, (cX, cY), 4, (0,0,255), -1)
             
             #tag ID
             tag_id = r.tag_id
             cv2.putText(frame, f"ID: {tag_id}", (ptA[0],ptA[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             
-        cv2.imShow("AprilTag", frame)
+        cv2.imshow("AprilTag", frame)
 
         #exit on 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):
