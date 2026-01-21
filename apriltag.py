@@ -28,6 +28,7 @@ class AprilTagDetector:
         
         # Default camera parameters for IMX296 (adjust based on your calibration)
         if camera_params is None:
+            #TODO:
             # These are approximate values - calibrate for better accuracy
             self.fx = 500  # Focal length x
             self.fy = 500  # Focal length y
