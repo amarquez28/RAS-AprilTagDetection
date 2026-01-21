@@ -299,13 +299,19 @@ class AprilTagDetector:
 
 if __name__ == "__main__":
     # Create detector instance
-    # Replace '10.TE.AM.2' with your team number, e.g., '10.25.18.2' for team 2518
+    # Option 1: Use team number directly (recommended)
+    # detector = AprilTagDetector(
+    #     tag_family='tag36h11',
+    #     camera_params=None,
+    #     roborio_ip=2518  # Replace with your actual team number
+    # )
+    
+    # Option 2: Use full IP address
     detector = AprilTagDetector(
         tag_family='tag36h11',  # Options: 'tag36h11', 'tag25h9', 'tag16h5', etc.
         camera_params=None,  # Or provide [fx, fy, cx, cy]
-        roborio_ip='10.TE.AM.2'  # Replace with your team number
+        roborio_ip='10.25.18.2'  # Replace with your roboRIO IP address
     )
-    
     # Run detection
     # Set display=False if running headless (no display/VNC)
-    detector.run(display=True, save_video=False)
+    detector.run(display=True, save_video=False
