@@ -314,4 +314,4 @@ if __name__ == "__main__":
     )
     # Run detection
     # Set display=False if running headless (no display/VNC)
-    detector.run(display=True, save_video=False
+    detector.run(display=True, save_video=False)
