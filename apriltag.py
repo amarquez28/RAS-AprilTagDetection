@@ -232,10 +232,13 @@ class AprilTagDetector:
         print(f"NetworkTables connected: {self.nt_inst.isConnected()}")
         
         try:
+            frame = self.picam2.capture_array()
+            while !detect_start_light(frame):
+                print("Looking for start_light")
+
             while True:
                 # Capture frame
                 frame = self.picam2.capture_array()
-                
                 # Detect tags
                 tags = self.detect_tags(frame)
                 
@@ -261,11 +264,11 @@ class AprilTagDetector:
                 
                 # Draw FPS and NetworkTables status
                 cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 nt_status = "NT: Connected" if self.nt_inst.isConnected() else "NT: Disconnected"
                 nt_color = (0, 255, 0) if self.nt_inst.isConnected() else (0, 0, 255)
                 cv2.putText(frame, nt_status, (10, 70),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, nt_color, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, nt_color, 2)
                 
                 # Save frame
                 if save_video and video_writer is not None:
@@ -295,6 +298,19 @@ class AprilTagDetector:
         # Stop NetworkTables
         self.nt_inst.stopClient()
         print("Cleanup complete")
+
+def detect_start_light(frame):
+    roi = frame[50:150, 250:390]
+    
+    gray = cv2.cvtColor(roi cv2.COLOR_BGR2GRAY)
+
+    _, thresh = cv2.threshhold(gray, 230, 255, cv2.THRESH_BINARY)
+
+    bright_pixels = cv2.countNonZero(thresh)
+
+    cv2.imshow("Bright Mask", thresh)
+
+    return bright_pixels > 3000
 
 
 if __name__ == "__main__":
