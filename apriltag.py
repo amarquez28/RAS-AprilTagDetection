@@ -46,7 +46,7 @@ class AprilTagDetector:
         # Configure camera for IMX296
         config = self.picam2.create_preview_configuration(
             main={"size": (1480, 1110), "format": "RGB888"},
-            controls={"FrameRate": 30}
+            controls={"FrameRate": 60}
         )
         self.picam2.configure(config)
         self.picam2.start()
@@ -242,30 +242,31 @@ class AprilTagDetector:
                 # Publish to NetworkTables
                 self.publish_detections(tags)
                 
-                # Draw detections
-                for tag in tags:
-                    self.draw_detection(frame, tag)
-                    
-                    # Print detection info
-                    print(f"Detected tag ID {tag.tag_id} at X:{tag.center[0]:.1f}, Y:{tag.center[1]:.1f}")
-                    if tag.pose_t is not None:
-                        distance = np.linalg.norm(tag.pose_t)
-                        print(f"  Distance: {distance:.3f}m")
-                
                 # Calculate FPS
                 fps_counter += 1
                 if fps_counter >= 30:
                     fps = fps_counter / (time.time() - fps_start_time)
                     fps_counter = 0
                     fps_start_time = time.time()
-                
-                # Draw FPS and NetworkTables status
-                cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                nt_status = "NT: Connected" if self.nt_inst.isConnected() else "NT: Disconnected"
-                nt_color = (0, 255, 0) if self.nt_inst.isConnected() else (0, 0, 255)
-                cv2.putText(frame, nt_status, (10, 70),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, nt_color, 2)
+
+                # Draw detections and status only if displaying or saving video
+                if display or save_video:
+                    for tag in tags:
+                        self.draw_detection(frame, tag)
+                        
+                        # Print detection info
+                        print(f"Detected tag ID {tag.tag_id} at X:{tag.center[0]:.1f}, Y:{tag.center[1]:.1f}")
+                        if tag.pose_t is not None:
+                            distance = np.linalg.norm(tag.pose_t)
+                            print(f"  Distance: {distance:.3f}m")
+
+                    # Draw FPS and NetworkTables status
+                    cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    nt_status = "NT: Connected" if self.nt_inst.isConnected() else "NT: Disconnected"
+                    nt_color = (0, 255, 0) if self.nt_inst.isConnected() else (0, 0, 255)
+                    cv2.putText(frame, nt_status, (10, 70),
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, nt_color, 2)
                 
                 # Save frame
                 if save_video and video_writer is not None:
