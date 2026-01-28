@@ -232,9 +232,14 @@ class AprilTagDetector:
         print(f"NetworkTables connected: {self.nt_inst.isConnected()}")
         
         try:
-            frame = self.picam2.capture_array()
-            while !detect_start_light(frame):
-                print("Looking for start_light")
+            print("looking for startlight")
+            start_light_found = False
+            while not start_light_found:
+                frame = self.picam2.capture_array()
+                if detect_start_light(frame):
+                    start_light_found = True
+
+            print("startlight detected")
 
             while True:
                 # Capture frame
@@ -302,9 +307,9 @@ class AprilTagDetector:
 def detect_start_light(frame):
     roi = frame[50:150, 250:390]
     
-    gray = cv2.cvtColor(roi cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-    _, thresh = cv2.threshhold(gray, 230, 255, cv2.THRESH_BINARY)
+    _, thresh = cv2.threshold(gray, 230, 255, cv2.THRESH_BINARY)
 
     bright_pixels = cv2.countNonZero(thresh)
 
