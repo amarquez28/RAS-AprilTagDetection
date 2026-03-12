@@ -347,7 +347,7 @@ class AprilTagDetector:
                         (center[0] - 20, center[1] + 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-    def run(self, display=True, save_video=False, output_file='output.avi'):
+    def run(self, display=False, save_video=False, output_file='output.avi'):
         """
         Run the detection loop
 
@@ -525,4 +525,4 @@ if __name__ == "__main__":
 
     # Run detection
     # Set display=False if running headless (no display/VNC)
-    detector.run(display=True, save_video=False)
+    detector.run(display=False, save_video=False)
