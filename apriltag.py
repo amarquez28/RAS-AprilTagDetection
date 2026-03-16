@@ -6,6 +6,23 @@ import time
 from ntcore import NetworkTableInstance
 import socket
 import struct
+import threading
+
+def listen():
+    """
+    This is purely a debug/diagnostic tool.
+    It listens on port 1150 for the roboRIO's reply packets.
+    If you're getting replies, your packets are reaching the roboRIO
+    """
+    recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    recv_sock.bind(("0.0.0.0", 1150))
+    recv_sock.settimeout(1.0)
+    while True:
+        try:
+            data, addr = recv_sock.recvfrom(1024)
+            print(f" << roboRIO reply: {data.hex()}")
+        except socket.timeout:
+            pass
 
 
 class DSPacketSender:
@@ -14,68 +31,52 @@ class DSPacketSender:
     Sends enable/disable commands to the roboRIO
     """
 
-    def __init__(self, roborio_ip, team_number):
+    def __init__(self, roborio_ip):
         """
         Initialize DS packet sender
 
         Args:
             roborio_ip: IP address of the roboRIO
-            team_number: FRC team number
         """
         self.roborio_ip = roborio_ip
-        self.team_number = team_number
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sequence = 0
 
         # DS sends to port 1110 on roboRIO
         self.roborio_port = 1110
 
-        print(f"DS Packet Sender initialized for team {team_number}")
+        self.AUTONOMOUS_DISABLED = 0x02
+        self.AUTONOMOUS_ENABLED = 0x06
+        self.ALLIANCE_STATION = 0x00  # Red 1
 
-    def create_ds_packet(self, enabled=False, autonomous=True, test=False, estop=False):
+        self.sequence = 0
+        self.lock = threading.Lock()
+
+        print(f"DS Packet Sender initialized")
+
+    def create_ds_packet(self, enabled):
         """
         Create an FRC Driver Station control packet
 
         Args:
             enabled: Enable the robot
-            autonomous: Autonomous mode (vs teleop)
-            test: Test mode
-            estop: Emergency stop
 
         Returns:
             bytes: DS packet ready to send
         """
+        control = self.AUTONOMOUS_ENABLED if enabled else self.AUTONOMOUS_DISABLED
+
         # Packet structure (simplified FRC DS protocol)
-        packet = bytearray(22)  # Minimum DS packet size
+        packet = bytearray(6)
 
-        # Sequence number (2 bytes)
-        struct.pack_into('>H', packet, 0, self.sequence)
-        self.sequence = (self.sequence + 1) % 65536
+        struct.pack_into('>H', packet, 0, self.sequence & 0xFFFF)
+        packet[2] = 0x01
+        packet[3] = control
+        packet[4] = 0x00
+        packet[5] = self.ALLIANCE_STATION
 
-        # Control byte
-        control = 0x00
-        if enabled:
-            control |= 0x04  # Enable bit
-        if autonomous:
-            control |= 0x02  # Auto bit
-        else:
-            control |= 0x00  # Teleop (no bit set, but clarifying)
-        if test:
-            control |= 0x01  # Test bit
-        if estop:
-            control |= 0x80  # E-stop bit
-
-        packet[2] = control
-
-        # Request byte (usually 0x00)
-        packet[3] = 0x00
-
-        # Alliance station (Red 1 = 0, Red 2 = 1, Red 3 = 2, Blue 1 = 3, Blue 2 = 4, Blue 3 = 5)
-        packet[4] = 0x00  # Default to Red 1
-
-        # Remaining bytes can be filled with joystick data, but we'll leave as zeros for vision
-
-        return bytes(packet)
+        return packet
 
     def enable_robot(self, autonomous=True):
         """
@@ -84,7 +85,7 @@ class DSPacketSender:
         Args:
             autonomous: True for autonomous mode, False for teleop
         """
-        packet = self.create_ds_packet(enabled=True, autonomous=autonomous)
+        packet = self.create_ds_packet(enabled=True)
         self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
         print(f"Sent ENABLE command (autonomous={autonomous})")
 
@@ -96,32 +97,25 @@ class DSPacketSender:
         self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
         print("Sent DISABLE command")
 
-    def estop_robot(self):
-        """
-        Send emergency stop command to robot
-        """
-        packet = self.create_ds_packet(enabled=False, estop=True)
-        self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
-        print("Sent E-STOP command")
-
-    def send_keepalive(self, enabled=False, autonomous=True):
-        """
-        Send keepalive packet (should be called periodically ~50Hz)
-
-        Args:
-            enabled: Current enable state
-            autonomous: Current mode
-        """
-        packet = self.create_ds_packet(enabled=enabled, autonomous=autonomous)
-        self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
-
     def close(self):
         """Close the socket"""
         self.sock.close()
 
 
+    def send_keepalive(self, enabled=False):
+        """
+        Send keepalive packet (should be called periodically ~50Hz)
+
+        Args:
+            enabled: Current enable state
+        """
+        packet = self.create_ds_packet(enabled=enabled)
+        self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
+        self.sequence = (self.sequence + 1) & 0xFFFF
+
+
 class AprilTagDetector:
-    def __init__(self, tag_family='tag36h11', camera_params=None, roborio_ip='10.25.18.2', team_number=2518):
+    def __init__(self, tag_family='tag36h11', camera_params=None, roborio_ip='10.0.67.2'):
         """
         Initialize AprilTag detector for Raspberry Pi with IMX296 camera
 
@@ -156,7 +150,7 @@ class AprilTagDetector:
         self.setup_networktables(roborio_ip)
 
         # Initialize DS packet sender
-        self.ds_sender = DSPacketSender(roborio_ip, team_number)
+        self.ds_sender = DSPacketSender(roborio_ip)
         self.robot_enabled = False
         self.last_keepalive_time = time.time()
 
@@ -287,7 +281,7 @@ class AprilTagDetector:
         """
         current_time = time.time()
         if current_time - self.last_keepalive_time >= 0.02:  # 50Hz = 20ms
-            self.ds_sender.send_keepalive(enabled=self.robot_enabled, autonomous=True)
+            self.ds_sender.send_keepalive(enabled=self.robot_enabled)
             self.last_keepalive_time = current_time
 
     def detect_tags(self, image):
@@ -399,6 +393,7 @@ class AprilTagDetector:
                         return
 
             print("Start light detected - Robot enabled - Beginning AprilTag detection")
+
 
             # Main detection loop
             while True:
@@ -519,8 +514,6 @@ if __name__ == "__main__":
     detector = AprilTagDetector(
         tag_family='tag36h11',  # Options: 'tag36h11', 'tag25h9', 'tag16h5', etc.
         camera_params=None,  # Or provide [fx, fy, cx, cy]
-        roborio_ip='10.25.18.2',  # Replace with your roboRIO IP address
-        team_number=2518  # Replace with your team number
     )
 
     # Run detection
