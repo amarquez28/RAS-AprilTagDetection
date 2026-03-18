@@ -6,13 +6,13 @@ import time
 from ntcore import NetworkTableInstance
 import socket
 import struct
-import threading
+
 
 def listen():
     """
-    This is purely a debug/diagnostic tool.
-    It listens on port 1150 for the roboRIO's reply packets.
-    If you're getting replies, your packets are reaching the roboRIO
+    Debug/diagnostic tool only - run this manually during testing.
+    Listens on port 1150 for roboRIO reply packets to confirm
+    packets are reaching the roboRIO.
     """
     recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     recv_sock.bind(("0.0.0.0", 1150))
@@ -27,105 +27,68 @@ def listen():
 
 class DSPacketSender:
     """
-    FRC Driver Station UDP packet sender
-    Sends enable/disable commands to the roboRIO
+    FRC Driver Station UDP packet sender.
+    Sends enable/disable commands to the roboRIO.
     """
 
     def __init__(self, roborio_ip):
-        """
-        Initialize DS packet sender
-
-        Args:
-            roborio_ip: IP address of the roboRIO
-        """
         self.roborio_ip = roborio_ip
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.sequence = 0
-
-        # DS sends to port 1110 on roboRIO
         self.roborio_port = 1110
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sequence = 0
 
         self.AUTONOMOUS_DISABLED = 0x02
-        self.AUTONOMOUS_ENABLED = 0x06
-        self.ALLIANCE_STATION = 0x00  # Red 1
+        self.AUTONOMOUS_ENABLED  = 0x06
+        self.ALLIANCE_STATION    = 0x00  # Red 1
 
-        self.sequence = 0
-        self.lock = threading.Lock()
-
-        print(f"DS Packet Sender initialized")
+        print("DS Packet Sender initialized")
 
     def create_ds_packet(self, enabled):
-        """
-        Create an FRC Driver Station control packet
-
-        Args:
-            enabled: Enable the robot
-
-        Returns:
-            bytes: DS packet ready to send
-        """
         control = self.AUTONOMOUS_ENABLED if enabled else self.AUTONOMOUS_DISABLED
-
-        # Packet structure (simplified FRC DS protocol)
         packet = bytearray(6)
-
         struct.pack_into('>H', packet, 0, self.sequence & 0xFFFF)
         packet[2] = 0x01
         packet[3] = control
         packet[4] = 0x00
         packet[5] = self.ALLIANCE_STATION
-
         return packet
 
     def enable_robot(self, autonomous=True):
-        """
-        Send enable command to robot
-
-        Args:
-            autonomous: True for autonomous mode, False for teleop
-        """
         packet = self.create_ds_packet(enabled=True)
         self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
+        self.sequence = (self.sequence + 1) & 0xFFFF
         print(f"Sent ENABLE command (autonomous={autonomous})")
 
     def disable_robot(self):
-        """
-        Send disable command to robot
-        """
         packet = self.create_ds_packet(enabled=False)
         self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
+        self.sequence = (self.sequence + 1) & 0xFFFF
         print("Sent DISABLE command")
 
-    def close(self):
-        """Close the socket"""
-        self.sock.close()
-
-
     def send_keepalive(self, enabled=False):
-        """
-        Send keepalive packet (should be called periodically ~50Hz)
-
-        Args:
-            enabled: Current enable state
-        """
+        """Send keepalive packet - call at ~50Hz from main loop."""
         packet = self.create_ds_packet(enabled=enabled)
         self.sock.sendto(packet, (self.roborio_ip, self.roborio_port))
         self.sequence = (self.sequence + 1) & 0xFFFF
 
+    def close(self):
+        self.sock.close()
+
 
 class AprilTagDetector:
-    def __init__(self, tag_family='tag36h11', camera_params=None, roborio_ip='10.0.67.2'):
+    def __init__(self, tag_family='tag36h11', camera_params=None, roborio_ip='10.0.67.2', display=False):
         """
-        Initialize AprilTag detector for Raspberry Pi with IMX296 camera
+        Initialize AprilTag detector for Raspberry Pi with IMX296 camera.
 
         Args:
-            tag_family: AprilTag family (default: 'tag36h11')
+            tag_family:    AprilTag family (default: 'tag36h11')
             camera_params: Camera calibration parameters [fx, fy, cx, cy]
-            roborio_ip: IP address of the roboRIO
-            team_number: FRC team number
+            roborio_ip:    IP address of the roboRIO
+            display:       True to configure for display mode, False for headless max-fps
         """
-        # Initialize the detector
+        self.sweep_done_sub = None
+        self.display = display
+
         self.detector = Detector(
             families=tag_family,
             nthreads=4,
@@ -136,9 +99,8 @@ class AprilTagDetector:
             debug=0
         )
 
-        # Default camera parameters for IMX296 (adjust based on your calibration)
+        # Default camera parameters for IMX296 (calibrate for better accuracy)
         if camera_params is None:
-            # These are approximate values - calibrate for better accuracy
             self.fx = 500  # Focal length x
             self.fy = 500  # Focal length y
             self.cx = 740  # Principal point x (half of 1480)
@@ -146,247 +108,169 @@ class AprilTagDetector:
         else:
             self.fx, self.fy, self.cx, self.cy = camera_params
 
-        # Initialize NetworkTables
         self.setup_networktables(roborio_ip)
 
-        # Initialize DS packet sender
         self.ds_sender = DSPacketSender(roborio_ip)
         self.robot_enabled = False
         self.last_keepalive_time = time.time()
 
-        # Initialize Picamera2
         self.picam2 = Picamera2()
 
-        # Configure camera for IMX296
-        config = self.picam2.create_preview_configuration(
-            main={"size": (1480, 1110), "format": "RGB888"},
-            controls={"FrameRate": 30}
-        )
+        if display:
+            # Preview config - includes ISP pipeline for display quality
+            config = self.picam2.create_preview_configuration(
+                main={"size": (1480, 1110), "format": "RGB888"},
+                controls={"FrameRate": 30}
+            )
+        else:
+            # Still config - lower ISP overhead, better throughput for headless
+            config = self.picam2.create_still_configuration(
+                main={"size": (1480, 1110), "format": "RGB888"}
+            )
+
         self.picam2.configure(config)
         self.picam2.start()
-
-        # Allow camera to warm up
-        time.sleep(2)
+        time.sleep(2)  # Camera warm-up
 
     def setup_networktables(self, roborio_ip):
-        """
-        Setup NetworkTables connection to roboRIO
-
-        Args:
-            roborio_ip: IP address of the roboRIO or team number (int)
-        """
-        # Get NetworkTables instance
         self.nt_inst = NetworkTableInstance.getDefault()
-
-        # Set up as a client
         self.nt_inst.startClient4("apriltag_detector")
+        self.sweep_done_sub = self.vision_table.getBooleanTopic("sweep_done").subscribe(False)
 
-        # If it's an integer, treat it as team number
         if isinstance(roborio_ip, int):
             self.nt_inst.setServerTeam(roborio_ip)
-        # If it's a string IP address
         else:
             self.nt_inst.setServer(roborio_ip)
 
-        # Get the vision table
         self.vision_table = self.nt_inst.getTable("Vision")
 
-        # Create entries for publishing data
-        self.tag_detected_entry = self.vision_table.getBooleanTopic("tag_detected").publish()
-        self.tag_id_entry = self.vision_table.getIntegerTopic("tag_id").publish()
-        self.tag_x_entry = self.vision_table.getDoubleTopic("tag_x").publish()
-        self.tag_y_entry = self.vision_table.getDoubleTopic("tag_y").publish()
-        self.tag_distance_entry = self.vision_table.getDoubleTopic("tag_distance").publish()
-        self.tag_count_entry = self.vision_table.getIntegerTopic("tag_count").publish()
+        # Single tag (primary)
+        self.tag_detected_entry  = self.vision_table.getBooleanTopic("tag_detected").publish()
+        self.tag_id_entry        = self.vision_table.getIntegerTopic("tag_id").publish()
+        self.tag_x_entry         = self.vision_table.getDoubleTopic("tag_x").publish()
+        self.tag_y_entry         = self.vision_table.getDoubleTopic("tag_y").publish()
+        self.tag_distance_entry  = self.vision_table.getDoubleTopic("tag_distance").publish()
+        self.tag_count_entry     = self.vision_table.getIntegerTopic("tag_count").publish()
 
-        # For multiple tags, create array entries
-        self.tags_ids_entry = self.vision_table.getIntegerArrayTopic("tags_ids").publish()
-        self.tags_x_entry = self.vision_table.getDoubleArrayTopic("tags_x").publish()
-        self.tags_y_entry = self.vision_table.getDoubleArrayTopic("tags_y").publish()
+        # All tags as arrays
+        self.tags_ids_entry       = self.vision_table.getIntegerArrayTopic("tags_ids").publish()
+        self.tags_x_entry         = self.vision_table.getDoubleArrayTopic("tags_x").publish()
+        self.tags_y_entry         = self.vision_table.getDoubleArrayTopic("tags_y").publish()
         self.tags_distances_entry = self.vision_table.getDoubleArrayTopic("tags_distances").publish()
 
-        # Heartbeat for connection monitoring
-        self.heartbeat_entry = self.vision_table.getIntegerTopic("heartbeat").publish()
+        self.heartbeat_entry   = self.vision_table.getIntegerTopic("heartbeat").publish()
         self.heartbeat_counter = 0
-
-        # Start light detection status
         self.start_light_entry = self.vision_table.getBooleanTopic("start_light_detected").publish()
 
         print(f"NetworkTables initialized, connecting to roboRIO at {roborio_ip}")
 
     def publish_detections(self, tags):
-        """
-        Publish detection results to NetworkTables
-
-        Args:
-            tags: List of detected tags
-        """
-        # Update heartbeat
         self.heartbeat_counter += 1
         self.heartbeat_entry.set(self.heartbeat_counter)
+        self.tag_count_entry.set(len(tags))
 
-        # Publish number of tags detected
-        num_tags = len(tags)
-        self.tag_count_entry.set(num_tags)
-
-        if num_tags > 0:
-            # Publish first/primary tag data (for simple use cases)
-            primary_tag = tags[0]
+        if tags:
+            primary = tags[0]
             self.tag_detected_entry.set(True)
-            self.tag_id_entry.set(int(primary_tag.tag_id))
-            self.tag_x_entry.set(float(primary_tag.center[0]))
-            self.tag_y_entry.set(float(primary_tag.center[1]))
+            self.tag_id_entry.set(int(primary.tag_id))
+            self.tag_x_entry.set(float(primary.center[0]))
+            self.tag_y_entry.set(float(primary.center[1]))
+            self.tag_distance_entry.set(
+                float(np.linalg.norm(primary.pose_t)) if primary.pose_t is not None else -1.0
+            )
 
-            if primary_tag.pose_t is not None:
-                distance = float(np.linalg.norm(primary_tag.pose_t))
-                self.tag_distance_entry.set(distance)
-            else:
-                self.tag_distance_entry.set(-1.0)
-
-            # Publish all tags as arrays
-            ids = [int(tag.tag_id) for tag in tags]
-            x_coords = [float(tag.center[0]) for tag in tags]
-            y_coords = [float(tag.center[1]) for tag in tags]
-            distances = []
-
-            for tag in tags:
-                if tag.pose_t is not None:
-                    distances.append(float(np.linalg.norm(tag.pose_t)))
-                else:
-                    distances.append(-1.0)
-
-            self.tags_ids_entry.set(ids)
-            self.tags_x_entry.set(x_coords)
-            self.tags_y_entry.set(y_coords)
-            self.tags_distances_entry.set(distances)
-
+            self.tags_ids_entry.set([int(t.tag_id) for t in tags])
+            self.tags_x_entry.set([float(t.center[0]) for t in tags])
+            self.tags_y_entry.set([float(t.center[1]) for t in tags])
+            self.tags_distances_entry.set([
+                float(np.linalg.norm(t.pose_t)) if t.pose_t is not None else -1.0
+                for t in tags
+            ])
         else:
-            # No tags detected
             self.tag_detected_entry.set(False)
             self.tag_id_entry.set(-1)
             self.tag_x_entry.set(0.0)
             self.tag_y_entry.set(0.0)
             self.tag_distance_entry.set(-1.0)
-
-            # Clear arrays
             self.tags_ids_entry.set([])
             self.tags_x_entry.set([])
             self.tags_y_entry.set([])
             self.tags_distances_entry.set([])
 
     def send_ds_keepalive(self):
-        """
-        Send DS keepalive packets at ~50Hz
-        Should be called in the main loop
-        """
         current_time = time.time()
-        if current_time - self.last_keepalive_time >= 0.02:  # 50Hz = 20ms
+        if current_time - self.last_keepalive_time >= 0.02:  # 50Hz
             self.ds_sender.send_keepalive(enabled=self.robot_enabled)
             self.last_keepalive_time = current_time
 
     def detect_tags(self, image):
-        """
-        Detect AprilTags in the image
-
-        Args:
-            image: BGR image from camera
-
-        Returns:
-            List of detected tags
-        """
-        # Convert to grayscale for detection
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # Detect tags
-        tags = self.detector.detect(
+        return self.detector.detect(
             gray,
             estimate_tag_pose=True,
             camera_params=[self.fx, self.fy, self.cx, self.cy],
-            tag_size=0.1  # Tag size in meters (adjust to your actual tag size)
+            tag_size=0.1  # Tag size in meters - adjust to your actual tag size
         )
 
-        return tags
-
     def draw_detection(self, image, tag):
-        """
-        Draw detection results on the image
-
-        Args:
-            image: Image to draw on
-            tag: Detected tag object
-        """
-        # Draw corners
+        """Draw tag overlay - only called in display mode."""
         corners = tag.corners.astype(int)
         for i in range(4):
             cv2.line(image, tuple(corners[i]), tuple(corners[(i + 1) % 4]), (0, 255, 0), 2)
 
-        # Draw center
         center = tuple(tag.center.astype(int))
         cv2.circle(image, center, 5, (0, 0, 255), -1)
-
-        # Draw tag ID
         cv2.putText(image, f"ID: {tag.tag_id}",
                     (center[0] - 20, center[1] - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-
-        # Draw coordinates
         cv2.putText(image, f"X: {tag.center[0]:.1f}, Y: {tag.center[1]:.1f}",
                     (center[0] - 20, center[1] + 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-        # Draw pose information if available
         if tag.pose_t is not None:
             distance = np.linalg.norm(tag.pose_t)
             cv2.putText(image, f"Dist: {distance:.2f}m",
                         (center[0] - 20, center[1] + 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-    def run(self, display=False, save_video=False, output_file='output.avi'):
+    def run(self, save_video=False, output_file='output.avi'):
         """
-        Run the detection loop
+        Run the detection loop.
 
         Args:
-            display: Show detection window (requires display/VNC)
-            save_video: Save output to video file
-            output_file: Output video filename
+            save_video:   Save annotated output to video file (display mode only)
+            output_file:  Output video filename
         """
-        fps_counter = 0
-        fps_start_time = time.time()
-        fps = 0
-
-        # Video writer setup
+        # Video writer - display mode only
         video_writer = None
-        if save_video:
+        if self.display and save_video:
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
             video_writer = cv2.VideoWriter(output_file, fourcc, 20.0, (1480, 1110))
 
-        print("Starting AprilTag detection... Press 'q' to quit")
+        # FPS tracking - display mode only
+        fps = 0
+        fps_counter = 0
+        fps_start_time = time.time()
+
+        print("Starting AprilTag detection...")
         print(f"NetworkTables connected: {self.nt_inst.isConnected()}")
+        print(f"Mode: {'display' if self.display else 'headless'}")
 
         try:
+            # ── Start light wait loop ─────────────────────────────────────
             print("Looking for start light...")
-            start_light_found = False
-
-            # Wait for start light
-            while not start_light_found:
+            while True:
                 frame = self.picam2.capture_array()
 
                 if detect_start_light(frame):
-                    start_light_found = True
-                    print(" START LIGHT DETECTED! ⚡")
-
-                    # Publish to NetworkTables
+                    print("START LIGHT DETECTED!")
                     self.start_light_entry.set(True)
-
-                    # Enable the robot in autonomous mode
                     self.ds_sender.enable_robot(autonomous=True)
                     self.robot_enabled = True
+                    time.sleep(0.1)  # Give robot time to initialize
+                    break
 
-                    # Give robot time to initialize
-                    time.sleep(0.1)
-
-                # Show start light detection window if display enabled
-                if display:
+                if self.display:
                     cv2.imshow('Waiting for Start Light', frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         print("Quit before start light detected")
@@ -394,61 +278,51 @@ class AprilTagDetector:
 
             print("Start light detected - Robot enabled - Beginning AprilTag detection")
 
-
-            # Main detection loop
+            # ── Main detection loop ───────────────────────────────────────
             while True:
-                # Capture frame
+                if self.sweep_done_sub.get():
+                    print("RIO signaled sweep done - stopping DS keep alive")
+                    self.ds_sender.disable_robot()
+                    self.robot_enabled = False
+                    break
+
                 frame = self.picam2.capture_array()
 
-                # Send DS keepalive packets
                 self.send_ds_keepalive()
 
-                # Detect tags
                 tags = self.detect_tags(frame)
-
-                # Publish to NetworkTables
                 self.publish_detections(tags)
 
-                # Draw detections
-                for tag in tags:
-                    self.draw_detection(frame, tag)
+                if self.display:
+                    for tag in tags:
+                        self.draw_detection(frame, tag)
+                        print(f"Tag ID {tag.tag_id} | X:{tag.center[0]:.1f} Y:{tag.center[1]:.1f}"
+                              + (f" Dist:{np.linalg.norm(tag.pose_t):.3f}m" if tag.pose_t is not None else ""))
 
-                    # Print detection info
-                    print(f"Detected tag ID {tag.tag_id} at X:{tag.center[0]:.1f}, Y:{tag.center[1]:.1f}")
-                    if tag.pose_t is not None:
-                        distance = np.linalg.norm(tag.pose_t)
-                        print(f"  Distance: {distance:.3f}m")
+                    # FPS overlay
+                    fps_counter += 1
+                    if fps_counter >= 30:
+                        fps = fps_counter / (time.time() - fps_start_time)
+                        fps_counter = 0
+                        fps_start_time = time.time()
 
-                # Calculate FPS
-                fps_counter += 1
-                if fps_counter >= 30:
-                    fps = fps_counter / (time.time() - fps_start_time)
-                    fps_counter = 0
-                    fps_start_time = time.time()
+                    cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-                # Draw status information
-                cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    nt_status = "NT: Connected" if self.nt_inst.isConnected() else "NT: Disconnected"
+                    nt_color  = (0, 255, 0) if self.nt_inst.isConnected() else (0, 0, 255)
+                    cv2.putText(frame, nt_status, (10, 70),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, nt_color, 2)
 
-                nt_status = "NT: Connected" if self.nt_inst.isConnected() else "NT: Disconnected"
-                nt_color = (0, 255, 0) if self.nt_inst.isConnected() else (0, 0, 255)
-                cv2.putText(frame, nt_status, (10, 70),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, nt_color, 2)
+                    robot_status = "ROBOT: ENABLED" if self.robot_enabled else "ROBOT: DISABLED"
+                    robot_color  = (0, 255, 0) if self.robot_enabled else (0, 0, 255)
+                    cv2.putText(frame, robot_status, (10, 110),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, robot_color, 2)
 
-                robot_status = "ROBOT: ENABLED" if self.robot_enabled else "ROBOT: DISABLED"
-                robot_color = (0, 255, 0) if self.robot_enabled else (0, 0, 255)
-                cv2.putText(frame, robot_status, (10, 110),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, robot_color, 2)
+                    if save_video and video_writer is not None:
+                        video_writer.write(frame)
 
-                # Save frame
-                if save_video and video_writer is not None:
-                    video_writer.write(frame)
-
-                # Display frame
-                if display:
                     cv2.imshow('AprilTag Detection', frame)
-
-                    # Check for quit
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
 
@@ -456,66 +330,43 @@ class AprilTagDetector:
             print("\nStopping detection...")
 
         finally:
-            # Disable robot before cleanup
             if self.robot_enabled:
                 print("Disabling robot...")
                 self.ds_sender.disable_robot()
                 self.robot_enabled = False
-
             self.cleanup(video_writer)
 
     def cleanup(self, video_writer=None):
-        """Clean up resources"""
         if video_writer is not None:
             video_writer.release()
         self.picam2.stop()
         cv2.destroyAllWindows()
-
-        # Stop NetworkTables
         self.nt_inst.stopClient()
-
-        # Close DS sender
         self.ds_sender.close()
-
         print("Cleanup complete")
 
 
 def detect_start_light(frame):
     """
-    Detect the start light in the camera frame
+    Detect the start light in the camera frame.
 
     Args:
-        frame: Camera frame (BGR format)
+        frame: Camera frame (RGB888 from Picamera2)
 
     Returns:
         bool: True if start light is detected
     """
-    # Define ROI for start light detection
     roi = frame[50:150, 250:390]
-
-    # Convert to grayscale
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-    # Threshold for bright areas
     _, thresh = cv2.threshold(gray, 230, 255, cv2.THRESH_BINARY)
-
-    # Count bright pixels
-    bright_pixels = cv2.countNonZero(thresh)
-
-    # Debug visualization
-    # cv2.imshow("Bright Mask", thresh)
-
-    # Return true if enough bright pixels (start light is on)
-    return bright_pixels > 3000
+    return cv2.countNonZero(thresh) > 3000
 
 
 if __name__ == "__main__":
-    # Create detector instance
     detector = AprilTagDetector(
-        tag_family='tag36h11',  # Options: 'tag36h11', 'tag25h9', 'tag16h5', etc.
-        camera_params=None,  # Or provide [fx, fy, cx, cy]
+        tag_family='tag36h11',  # Options: 'tag36h11', 'tag25h9', 'tag16h5'
+        camera_params=None,     # Or provide [fx, fy, cx, cy] from calibration
+        display=False           # Set True to enable camera feed and debug overlays
     )
 
-    # Run detection
-    # Set display=False if running headless (no display/VNC)
-    detector.run(display=False, save_video=False)
+    detector.run(save_video=False)
