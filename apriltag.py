@@ -271,6 +271,7 @@ class AprilTagDetector:
                     break
 
                 if self.display:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
                     cv2.imshow('Waiting for Start Light', frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         print("Quit before start light detected")
