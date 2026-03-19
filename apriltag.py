@@ -135,7 +135,6 @@ class AprilTagDetector:
     def setup_networktables(self, roborio_ip):
         self.nt_inst = NetworkTableInstance.getDefault()
         self.nt_inst.startClient4("apriltag_detector")
-        self.sweep_done_sub = self.vision_table.getBooleanTopic("sweep_done").subscribe(False)
 
         if isinstance(roborio_ip, int):
             self.nt_inst.setServerTeam(roborio_ip)
@@ -143,6 +142,7 @@ class AprilTagDetector:
             self.nt_inst.setServer(roborio_ip)
 
         self.vision_table = self.nt_inst.getTable("Vision")
+        self.sweep_done_sub = self.vision_table.getBooleanTopic("sweep_done").subscribe(False)
 
         # Single tag (primary)
         self.tag_detected_entry  = self.vision_table.getBooleanTopic("tag_detected").publish()
@@ -294,6 +294,7 @@ class AprilTagDetector:
                 self.publish_detections(tags)
 
                 if self.display:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
                     for tag in tags:
                         self.draw_detection(frame, tag)
                         print(f"Tag ID {tag.tag_id} | X:{tag.center[0]:.1f} Y:{tag.center[1]:.1f}"
