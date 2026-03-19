@@ -86,7 +86,7 @@ class AprilTagDetector:
             roborio_ip:    IP address of the roboRIO
             display:       True to configure for display mode, False for headless max-fps
         """
-        self.sweep_done_sub = None
+        self.task_done_sub = None
         self.display = display
 
         self.detector = Detector(
@@ -142,7 +142,7 @@ class AprilTagDetector:
             self.nt_inst.setServer(roborio_ip)
 
         self.vision_table = self.nt_inst.getTable("Vision")
-        self.sweep_done_sub = self.vision_table.getBooleanTopic("sweep_done").subscribe(False)
+        self.task_done_sub = self.vision_table.getBooleanTopic("task_done").subscribe(False)
 
         # Single tag (primary)
         self.tag_detected_entry  = self.vision_table.getBooleanTopic("tag_detected").publish()
@@ -281,7 +281,7 @@ class AprilTagDetector:
 
             # ── Main detection loop ───────────────────────────────────────
             while True:
-                if self.sweep_done_sub.get():
+                if self.task_done_sub.get():
                     print("RIO signaled sweep done - stopping DS keep alive")
                     self.ds_sender.disable_robot()
                     self.robot_enabled = False
