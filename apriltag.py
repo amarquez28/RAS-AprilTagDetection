@@ -99,12 +99,21 @@ class AprilTagDetector:
             debug=0
         )
 
-        # Default camera parameters for IMX296 (calibrate for better accuracy)
+        # Camera parameters for IMX296 after 90° CW rotation.
+        #
+        # The physical sensor captures 1480 (W) × 1110 (H).
+        # After cv2.ROTATE_90_CLOCKWISE the frame becomes 1110 (W) × 1480 (H).
+        # The principal point axes swap accordingly:
+        #   cx (horizontal centre) = 1110 / 2 = 555
+        #   cy (vertical centre)   = 1480 / 2 = 740
+        # fx and fy are swapped to match the new axis assignment.
+        # These are uncalibrated estimates — proper camera calibration will
+        # improve pose accuracy significantly.
         if camera_params is None:
-            self.fx = 500  # Focal length x
-            self.fy = 500  # Focal length y
-            self.cx = 740  # Principal point x (half of 1480)
-            self.cy = 555  # Principal point y (half of 1110)
+            self.fx = 500  # Focal length along new X axis (was Y on raw sensor)
+            self.fy = 500  # Focal length along new Y axis (was X on raw sensor)
+            self.cx = 555  # Principal point x: half of rotated frame width  (1110/2)
+            self.cy = 740  # Principal point y: half of rotated frame height (1480/2)
         else:
             self.fx, self.fy, self.cx, self.cy = camera_params
 
@@ -261,6 +270,7 @@ class AprilTagDetector:
             print("Looking for start light...")
             while True:
                 frame = self.picam2.capture_array()
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
                 if detect_start_light(frame):
                     print("START LIGHT DETECTED!")
@@ -271,7 +281,6 @@ class AprilTagDetector:
                     break
 
                 if self.display:
-                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
                     cv2.imshow('Waiting for Start Light', frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         print("Quit before start light detected")
@@ -288,6 +297,7 @@ class AprilTagDetector:
                     break
 
                 frame = self.picam2.capture_array()
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
                 self.send_ds_keepalive()
 
@@ -295,7 +305,6 @@ class AprilTagDetector:
                 self.publish_detections(tags)
 
                 if self.display:
-                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
                     for tag in tags:
                         self.draw_detection(frame, tag)
                         print(f"Tag ID {tag.tag_id} | X:{tag.center[0]:.1f} Y:{tag.center[1]:.1f}"
