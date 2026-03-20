@@ -294,6 +294,8 @@ class AprilTagDetector:
             #             print("Quit before start light detected")
             #             return
             time.sleep(2)
+            self.ds_sender.enable_robot(autonomous=True)
+            self.robot_enabled = True
             print("Start light detected - Robot enabled - Beginning AprilTag detection")
 
             # ── Main detection loop ───────────────────────────────────────
