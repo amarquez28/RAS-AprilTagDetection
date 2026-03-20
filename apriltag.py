@@ -293,7 +293,7 @@ class AprilTagDetector:
             #         if cv2.waitKey(1) & 0xFF == ord('q'):
             #             print("Quit before start light detected")
             #             return
-
+            time.sleep(2)
             print("Start light detected - Robot enabled - Beginning AprilTag detection")
 
             # ── Main detection loop ───────────────────────────────────────
