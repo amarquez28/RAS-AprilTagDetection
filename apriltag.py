@@ -307,7 +307,7 @@ class AprilTagDetector:
                     break
 
                 frame = self.picam2.capture_array()
-                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
                 self.send_ds_keepalive()
 
