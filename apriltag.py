@@ -184,9 +184,17 @@ class AprilTagDetector:
             self.tag_id_entry.set(int(primary.tag_id))
             self.tag_x_entry.set(float(primary.center[0]))
             self.tag_y_entry.set(float(primary.center[1]))
-            self.tag_distance_entry.set(
-                float(np.linalg.norm(primary.pose_t)) if primary.pose_t is not None else -1.0
-            )
+            dist = float(np.linalg.norm(primary.pose_t)) if primary.pose_t is not None else -1.0
+            self.tag_distance_entry.set(dist)
+
+            # ── CALIBRATION OUTPUT ────────────────────────────────────────
+            # Aim the robot straight at a tag, read tag_x over SSH, and
+            # average 5-10 readings. That value is your kCameraCenter_px.
+            # Comment this block out once calibration is done.
+            # dist_str = f"{dist:.3f}m" if dist >= 0 else "N/A"
+            # print(f"[CAL] tag_x={float(primary.center[0]):.1f}  "
+            #       f"tag_y={float(primary.center[1]):.1f}  "
+            #       f"dist={dist_str}")
 
             self.tags_ids_entry.set([int(t.tag_id) for t in tags])
             self.tags_x_entry.set([float(t.center[0]) for t in tags])
@@ -267,25 +275,27 @@ class AprilTagDetector:
 
         try:
             # ── Start light wait loop ─────────────────────────────────────
-            print("Looking for start light...")
-            while True:
-                frame = self.picam2.capture_array()
-                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-
-                if detect_start_light(frame):
-                    print("START LIGHT DETECTED!")
-                    self.start_light_entry.set(True)
-                    self.ds_sender.enable_robot(autonomous=True)
-                    self.robot_enabled = True
-                    time.sleep(0.1)  # Give robot time to initialize
-                    break
-
-                if self.display:
-                    cv2.imshow('Waiting for Start Light', frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        print("Quit before start light detected")
-                        return
-
+            # print("Looking for start light...")
+            # while True:
+            #     frame = self.picam2.capture_array()
+            #     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            #
+            #     if detect_start_light(frame):
+            #         print("START LIGHT DETECTED!")
+            #         self.start_light_entry.set(True)
+            #         self.ds_sender.enable_robot(autonomous=True)
+            #         self.robot_enabled = True
+            #         time.sleep(0.1)  # Give robot time to initialize
+            #         break
+            #
+            #     if self.display:
+            #         cv2.imshow('Waiting for Start Light', frame)
+            #         if cv2.waitKey(1) & 0xFF == ord('q'):
+            #             print("Quit before start light detected")
+            #             return
+            time.sleep(2)
+            self.ds_sender.enable_robot(autonomous=True)
+            self.robot_enabled = True
             print("Start light detected - Robot enabled - Beginning AprilTag detection")
 
             # ── Main detection loop ───────────────────────────────────────
@@ -297,7 +307,7 @@ class AprilTagDetector:
                     break
 
                 frame = self.picam2.capture_array()
-                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
                 self.send_ds_keepalive()
 
