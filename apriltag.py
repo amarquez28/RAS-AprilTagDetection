@@ -274,25 +274,6 @@ class AprilTagDetector:
         print(f"Mode: {'display' if self.display else 'headless'}")
 
         try:
-            # ── Start light wait loop ─────────────────────────────────────
-            # print("Looking for start light...")
-            # while True:
-            #     frame = self.picam2.capture_array()
-            #     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-            #
-            #     if detect_start_light(frame):
-            #         print("START LIGHT DETECTED!")
-            #         self.start_light_entry.set(True)
-            #         self.ds_sender.enable_robot(autonomous=True)
-            #         self.robot_enabled = True
-            #         time.sleep(0.1)  # Give robot time to initialize
-            #         break
-            #
-            #     if self.display:
-            #         cv2.imshow('Waiting for Start Light', frame)
-            #         if cv2.waitKey(1) & 0xFF == ord('q'):
-            #             print("Quit before start light detected")
-            #             return
             time.sleep(2)
             self.ds_sender.enable_robot(autonomous=True)
             self.robot_enabled = True
