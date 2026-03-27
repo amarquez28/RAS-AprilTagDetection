@@ -1,13 +1,131 @@
+import os
 import cv2
 from pyapriltags import Detector
 import numpy as np
-from picamera2 import Picamera2
 import time
 from ntcore import NetworkTableInstance
 import socket
 import struct
 
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    # mock for testing on my mac or any non pi systems
+    class Picamera2:
+        def configure(self, config):
+            pass
+        def start(self):
+            print("[Mock] Camera started")
+        def capture_array(self):
+            import numpy as np
+            return np.zeros((480, 640, 3), dtype=np.uint8)  # blank frame
 
+CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calibration_params.npz')
+display = True
+
+
+def calibrate(picam2, board_size=(9, 6), square_size=1.0, min_frames=15, capture_interval=2.0):
+    """
+    Calibrate camera from live Picamera2 feed with a printed chessboard.
+
+    Hold the chessboard in front of the camera at different angles/distances.
+    The function captures a frame every `capture_interval` seconds, checks for
+    the chessboard, and collects until `min_frames` good detections are gathered.
+    Press 'q' to stop early (if at least 5 frames collected).
+
+    Args:
+        picam2:           Already-started Picamera2 instance.
+        board_size:       Inner corners of the chessboard (cols, rows).
+        square_size:      Size of one square in your chosen unit (e.g. mm or cm).
+        min_frames:       Number of good chessboard frames to collect.
+        capture_interval: Seconds between capture attempts (gives you time to move the board).
+
+    Returns:
+        (camMatrix, distCoeff) on success, or None on failure.
+    """
+    term_criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+
+    world_pts = np.zeros((board_size[0] * board_size[1], 3), np.float32)
+    world_pts[:, :2] = np.mgrid[0:board_size[0], 0:board_size[1]].T.reshape(-1, 2)
+    world_pts *= square_size
+
+    world_pts_list = []
+    img_pts_list = []
+    used_count = 0
+
+    print(f"[calibrate] Hold chessboard ({board_size[0]}x{board_size[1]}) in front of camera.")
+    print(f"[calibrate] Capturing every {capture_interval}s. Need {min_frames} good frames. Press 'q' to finish early.")
+
+    last_capture = 0.0
+
+    while True:
+        frame = picam2.capture_array()
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+        now = time.time()
+        status_text = f"Collected: {used_count}/{min_frames}"
+
+        if now - last_capture >= capture_interval:
+            last_capture = now
+            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            found, corners = cv2.findChessboardCorners(frame_gray, board_size, None)
+
+            if found:
+                corners_refined = cv2.cornerSubPix(frame_gray, corners, (11, 11), (-1, -1), term_criteria)
+                world_pts_list.append(world_pts)
+                img_pts_list.append(corners_refined)
+                used_count += 1
+                print(f"  chessboard found ({used_count}/{min_frames})")
+                cv2.drawChessboardCorners(frame, board_size, corners_refined, found)
+                status_text = f"CAPTURED {used_count}/{min_frames}"
+            else:
+                status_text = f"No board detected ({used_count}/{min_frames})"
+
+            if used_count >= min_frames:
+                break
+
+        cv2.putText(frame, status_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.imshow("Calibration", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cv2.destroyWindow("Calibration")
+
+    if used_count < 5:
+        print(f"[calibrate] ERROR: only collected {used_count} frames (need at least 5)")
+        return None
+
+    print(f"[calibrate] Running calibration with {used_count} frames...")
+    rep_error, cam_matrix, dist_coeff, rvecs, tvecs = cv2.calibrateCamera(
+        world_pts_list, img_pts_list, frame_gray.shape[::-1], None, None
+    )
+
+    print(f"  Camera matrix:\n{cam_matrix}")
+    print(f"  Reprojection error: {rep_error:.4f} pixels")
+
+    np.savez(CALIBRATION_FILE,
+             repError=rep_error, camMatrix=cam_matrix, distCoeff=dist_coeff,
+             rvecs=rvecs, tvecs=tvecs)
+    print(f"  Saved to {CALIBRATION_FILE}")
+
+    return cam_matrix, dist_coeff
+
+
+def load_calibration():
+    """Load calibration from file. Returns (camMatrix, distCoeff) or None."""
+    if not os.path.exists(CALIBRATION_FILE):
+        return None
+    data = np.load(CALIBRATION_FILE)
+    print(f"[calibration] Loaded from {CALIBRATION_FILE} (reprojection error: {data['repError']:.4f}px)")
+    return data['camMatrix'], data['distCoeff']
+
+
+def undistort_frame(frame, cam_matrix, dist_coeff):
+    """Remove lens distortion from a frame."""
+    h, w = frame.shape[:2]
+    new_matrix, roi = cv2.getOptimalNewCameraMatrix(cam_matrix, dist_coeff, (w, h), 1, (w, h))
+    return cv2.undistort(frame, cam_matrix, dist_coeff, None, new_matrix)
+    
 def listen():
     """
     Debug/diagnostic tool only - run this manually during testing.
@@ -76,7 +194,7 @@ class DSPacketSender:
 
 
 class AprilTagDetector:
-    def __init__(self, tag_family='tag36h11', camera_params=None, roborio_ip='10.0.67.2', display=False):
+    def __init__(self, tag_family='tag36h11', camera_params=None, roborio_ip='10.0.67.2'):
         """
         Initialize AprilTag detector for Raspberry Pi with IMX296 camera.
 
@@ -230,44 +348,69 @@ class AprilTagDetector:
         )
 
     def draw_detection(self, image, tag):
-        """Draw tag overlay - only called in display mode."""
-        corners = tag.corners.astype(int)
-        for i in range(4):
-            cv2.line(image, tuple(corners[i]), tuple(corners[(i + 1) % 4]), (0, 255, 0), 2)
+        """Draw a 3D cube on the tag to visualize its pose. Only called in display mode."""
+        if tag.pose_R is None or tag.pose_t is None:
+            return
 
+        half = 0.1 / 2  # half of tag_size (0.1m)
+        cube_height = 0.1  # cube extends 10cm out from the tag face
+
+        # 8 corners of a cube: bottom face sits on the tag, top face extends toward camera
+        cube_pts = np.float32([
+            [-half, -half, 0],  [half, -half, 0],
+            [half,  half, 0],   [-half,  half, 0],
+            [-half, -half, -cube_height], [half, -half, -cube_height],
+            [half,  half, -cube_height],  [-half,  half, -cube_height],
+        ])
+
+        cam_matrix = np.array([
+            [self.fx, 0, self.cx],
+            [0, self.fy, self.cy],
+            [0, 0, 1]
+        ], dtype=np.float64)
+
+        rvec, _ = cv2.Rodrigues(tag.pose_R)
+        tvec = tag.pose_t.reshape(3, 1)
+
+        img_pts, _ = cv2.projectPoints(cube_pts, rvec, tvec, cam_matrix, None)
+        pts = img_pts.reshape(-1, 2).astype(int)
+
+        # Draw bottom face (green, on the tag)
+        cv2.drawContours(image, [pts[:4]], -1, (0, 255, 0), 2)
+        # Draw top face (red, floating above)
+        cv2.drawContours(image, [pts[4:]], -1, (0, 0, 255), 2)
+        # Draw vertical pillars (blue)
+        for i in range(4):
+            cv2.line(image, tuple(pts[i]), tuple(pts[i + 4]), (255, 0, 0), 2)
+
+        # Tag ID and distance text
         center = tuple(tag.center.astype(int))
-        cv2.circle(image, center, 5, (0, 0, 255), -1)
         cv2.putText(image, f"ID: {tag.tag_id}",
                     (center[0] - 20, center[1] - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-        cv2.putText(image, f"X: {tag.center[0]:.1f}, Y: {tag.center[1]:.1f}",
+        distance = np.linalg.norm(tag.pose_t)
+        cv2.putText(image, f"Dist: {distance:.2f}m",
                     (center[0] - 20, center[1] + 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-        if tag.pose_t is not None:
-            distance = np.linalg.norm(tag.pose_t)
-            cv2.putText(image, f"Dist: {distance:.2f}m",
-                        (center[0] - 20, center[1] + 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-
-    def run(self, save_video=False, output_file='output.avi'):
+    def run(self, cam_matrix=None, dist_coeff=None):
         """
         Run the detection loop.
 
         Args:
-            save_video:   Save annotated output to video file (display mode only)
-            output_file:  Output video filename
+            cam_matrix: Camera matrix from calibration (None to skip undistortion).
+            dist_coeff: Distortion coefficients from calibration (None to skip undistortion).
         """
-        # Video writer - display mode only
-        video_writer = None
-        if self.display and save_video:
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            video_writer = cv2.VideoWriter(output_file, fourcc, 20.0, (1480, 1110))
-
         # FPS tracking - display mode only
         fps = 0
         fps_counter = 0
         fps_start_time = time.time()
+
+        use_undistort = cam_matrix is not None and dist_coeff is not None
+        if use_undistort:
+            print("Lens distortion correction: ENABLED")
+        else:
+            print("Lens distortion correction: DISABLED (no calibration data)")
 
         print("Starting AprilTag detection...")
         print(f"NetworkTables connected: {self.nt_inst.isConnected()}")
@@ -281,13 +424,16 @@ class AprilTagDetector:
             # ── Main detection loop ───────────────────────────────────────
             while True:
                 if self.task_done_sub.get():
-                    print("RIO signaled sweep done - stopping DS keep alive")
+                    print("RIO signaled task done - stopping DS keepalive")
                     self.ds_sender.disable_robot()
                     self.robot_enabled = False
                     break
 
                 frame = self.picam2.capture_array()
                 frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+                if use_undistort:
+                    frame = undistort_frame(frame, cam_matrix, dist_coeff)
 
                 self.send_ds_keepalive()
 
@@ -320,9 +466,6 @@ class AprilTagDetector:
                     cv2.putText(frame, robot_status, (10, 110),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, robot_color, 2)
 
-                    if save_video and video_writer is not None:
-                        video_writer.write(frame)
-
                     cv2.imshow('AprilTag Detection', frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
@@ -335,11 +478,8 @@ class AprilTagDetector:
                 print("Disabling robot...")
                 self.ds_sender.disable_robot()
                 self.robot_enabled = False
-            self.cleanup(video_writer)
 
-    def cleanup(self, video_writer=None):
-        if video_writer is not None:
-            video_writer.release()
+    def cleanup(self):
         self.picam2.stop()
         cv2.destroyAllWindows()
         self.nt_inst.stopClient()
@@ -347,27 +487,52 @@ class AprilTagDetector:
         print("Cleanup complete")
 
 
-def detect_start_light(frame):
-    """
-    Detect the start light in the camera frame.
-
-    Args:
-        frame: Camera frame (RGB888 from Picamera2)
-
-    Returns:
-        bool: True if start light is detected
-    """
-    roi = frame[50:150, 250:390]
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 230, 255, cv2.THRESH_BINARY)
-    return cv2.countNonZero(thresh) > 3000
-
-
 if __name__ == "__main__":
+    import sys
+
+    # --- Calibration mode: python apriltag.py --calibrate [cols rows] ---
+    if len(sys.argv) >= 2 and sys.argv[1] == '--calibrate':
+        board = (9, 6)  # default chessboard inner corners
+        if len(sys.argv) >= 4:
+            board = (int(sys.argv[2]), int(sys.argv[3]))
+
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(
+            main={"size": (1480, 1110), "format": "RGB888"},
+            controls={"FrameRate": 30}
+        )
+        picam2.configure(config)
+        picam2.start()
+        time.sleep(2)
+
+        result = calibrate(picam2, board_size=board)
+        picam2.stop()
+        if result is None:
+            print("Calibration failed.")
+            sys.exit(1)
+        print("Calibration complete.")
+        sys.exit(0)
+
+    # --- Detection mode ---
+    calib = load_calibration()
+    cam_matrix = None
+    dist_coeff = None
+    camera_params = None
+
+    if calib is not None:
+        cam_matrix, dist_coeff = calib
+        # Extract fx, fy, cx, cy from calibrated camera matrix for AprilTag pose estimation
+        camera_params = [cam_matrix[0, 0], cam_matrix[1, 1], cam_matrix[0, 2], cam_matrix[1, 2]]
+    else:
+        print("WARNING: No calibration file found. Running with estimated camera params and no undistortion.")
+
     detector = AprilTagDetector(
-        tag_family='tag36h11',  # Options: 'tag36h11', 'tag25h9', 'tag16h5'
-        camera_params=None,     # Or provide [fx, fy, cx, cy] from calibration
-        display=False           # Set True to enable camera feed and debug overlays
+        tag_family='tag36h11',
+        camera_params=camera_params,
     )
 
-    detector.run(save_video=False)
+    try:
+        detector.run(cam_matrix, dist_coeff)
+    finally:
+        detector.cleanup()
+
