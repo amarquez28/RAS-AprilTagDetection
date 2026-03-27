@@ -295,16 +295,33 @@ class AprilTagDetector:
         self.tags_pose_ty_entry   = self.vision_table.getDoubleArrayTopic("tags_pose_ty").publish()
         self.tags_pose_tz_entry   = self.vision_table.getDoubleArrayTopic("tags_pose_tz").publish()
 
+        # Capture timestamp in RIO FPGA time (microseconds), converted via NT4 clock sync
+        self.tag_timestamp_entry = self.vision_table.getIntegerTopic("tag_timestamp_us").publish()
+
         self.heartbeat_entry   = self.vision_table.getIntegerTopic("heartbeat").publish()
         self.heartbeat_counter = 0
         self.start_light_entry = self.vision_table.getBooleanTopic("start_light_detected").publish()
 
         print(f"NetworkTables initialized, connecting to roboRIO at {roborio_ip}")
 
-    def publish_detections(self, tags):
+    def capture_rio_timestamp(self):
+        """
+        Record a timestamp at frame capture and convert to RIO FPGA time
+        using NT4's built-in clock synchronization.
+
+        Returns RIO-relative timestamp in microseconds, or -1 if not synced yet.
+        """
+        local_time_us = self.nt_inst.now()  # local NT time in microseconds
+        offset = self.nt_inst.getServerTimeOffset()  # None if not synced
+        if offset is None:
+            return -1
+        return local_time_us + offset
+
+    def publish_detections(self, tags, capture_timestamp_us):
         self.heartbeat_counter += 1
         self.heartbeat_entry.set(self.heartbeat_counter)
         self.tag_count_entry.set(len(tags))
+        self.tag_timestamp_entry.set(capture_timestamp_us)
 
         if tags:
             primary = tags[0]
@@ -454,6 +471,7 @@ class AprilTagDetector:
                     break
 
                 frame = self.picam2.capture_array()
+                capture_timestamp_us = self.capture_rio_timestamp()
                 frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
                 if use_undistort:
@@ -462,7 +480,7 @@ class AprilTagDetector:
                 self.send_ds_keepalive()
 
                 tags = self.detect_tags(frame)
-                self.publish_detections(tags)
+                self.publish_detections(tags, capture_timestamp_us)
 
                 if self.display:
                     for tag in tags:
