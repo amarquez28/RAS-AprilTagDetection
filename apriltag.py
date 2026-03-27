@@ -279,11 +279,21 @@ class AprilTagDetector:
         self.tag_distance_entry  = self.vision_table.getDoubleTopic("tag_distance").publish()
         self.tag_count_entry     = self.vision_table.getIntegerTopic("tag_count").publish()
 
+        # Primary tag pose (camera-relative, metres)
+        self.tag_pose_tx_entry       = self.vision_table.getDoubleTopic("tag_pose_tx").publish()
+        self.tag_pose_ty_entry       = self.vision_table.getDoubleTopic("tag_pose_ty").publish()
+        self.tag_pose_tz_entry       = self.vision_table.getDoubleTopic("tag_pose_tz").publish()
+        self.tag_pose_err_entry      = self.vision_table.getDoubleTopic("tag_pose_err").publish()
+        self.tag_decision_margin_entry = self.vision_table.getDoubleTopic("tag_decision_margin").publish()
+
         # All tags as arrays
         self.tags_ids_entry       = self.vision_table.getIntegerArrayTopic("tags_ids").publish()
         self.tags_x_entry         = self.vision_table.getDoubleArrayTopic("tags_x").publish()
         self.tags_y_entry         = self.vision_table.getDoubleArrayTopic("tags_y").publish()
         self.tags_distances_entry = self.vision_table.getDoubleArrayTopic("tags_distances").publish()
+        self.tags_pose_tx_entry   = self.vision_table.getDoubleArrayTopic("tags_pose_tx").publish()
+        self.tags_pose_ty_entry   = self.vision_table.getDoubleArrayTopic("tags_pose_ty").publish()
+        self.tags_pose_tz_entry   = self.vision_table.getDoubleArrayTopic("tags_pose_tz").publish()
 
         self.heartbeat_entry   = self.vision_table.getIntegerTopic("heartbeat").publish()
         self.heartbeat_counter = 0
@@ -304,15 +314,18 @@ class AprilTagDetector:
             self.tag_y_entry.set(float(primary.center[1]))
             dist = float(np.linalg.norm(primary.pose_t)) if primary.pose_t is not None else -1.0
             self.tag_distance_entry.set(dist)
+            self.tag_decision_margin_entry.set(float(primary.decision_margin))
 
-            # ── CALIBRATION OUTPUT ────────────────────────────────────────
-            # Aim the robot straight at a tag, read tag_x over SSH, and
-            # average 5-10 readings. That value is your kCameraCenter_px.
-            # Comment this block out once calibration is done.
-            # dist_str = f"{dist:.3f}m" if dist >= 0 else "N/A"
-            # print(f"[CAL] tag_x={float(primary.center[0]):.1f}  "
-            #       f"tag_y={float(primary.center[1]):.1f}  "
-            #       f"dist={dist_str}")
+            if primary.pose_t is not None:
+                self.tag_pose_tx_entry.set(float(primary.pose_t[0]))
+                self.tag_pose_ty_entry.set(float(primary.pose_t[1]))
+                self.tag_pose_tz_entry.set(float(primary.pose_t[2]))
+                self.tag_pose_err_entry.set(float(primary.pose_err))
+            else:
+                self.tag_pose_tx_entry.set(0.0)
+                self.tag_pose_ty_entry.set(0.0)
+                self.tag_pose_tz_entry.set(0.0)
+                self.tag_pose_err_entry.set(-1.0)
 
             self.tags_ids_entry.set([int(t.tag_id) for t in tags])
             self.tags_x_entry.set([float(t.center[0]) for t in tags])
@@ -321,16 +334,27 @@ class AprilTagDetector:
                 float(np.linalg.norm(t.pose_t)) if t.pose_t is not None else -1.0
                 for t in tags
             ])
+            self.tags_pose_tx_entry.set([float(t.pose_t[0]) if t.pose_t is not None else 0.0 for t in tags])
+            self.tags_pose_ty_entry.set([float(t.pose_t[1]) if t.pose_t is not None else 0.0 for t in tags])
+            self.tags_pose_tz_entry.set([float(t.pose_t[2]) if t.pose_t is not None else 0.0 for t in tags])
         else:
             self.tag_detected_entry.set(False)
             self.tag_id_entry.set(-1)
             self.tag_x_entry.set(0.0)
             self.tag_y_entry.set(0.0)
             self.tag_distance_entry.set(-1.0)
+            self.tag_pose_tx_entry.set(0.0)
+            self.tag_pose_ty_entry.set(0.0)
+            self.tag_pose_tz_entry.set(0.0)
+            self.tag_pose_err_entry.set(-1.0)
+            self.tag_decision_margin_entry.set(0.0)
             self.tags_ids_entry.set([])
             self.tags_x_entry.set([])
             self.tags_y_entry.set([])
             self.tags_distances_entry.set([])
+            self.tags_pose_tx_entry.set([])
+            self.tags_pose_ty_entry.set([])
+            self.tags_pose_tz_entry.set([])
 
     def send_ds_keepalive(self):
         current_time = time.time()
