@@ -21,7 +21,29 @@ except ImportError:
             return np.zeros((480, 640, 3), dtype=np.uint8)  # blank frame
 
 CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calibration_params.npz')
+CAMERA_TILT_DEG = 40.0  # Camera tilts 40° downward from horizontal
+CAMERA_TILT_RAD = np.radians(CAMERA_TILT_DEG)
 display = True
+
+# ── Known AprilTag field positions ────────────────────────────────────────────
+# Format: tag_id → (field_x, field_y, facing_angle_rad)
+# facing_angle = direction the tag's front normal points in field coordinates
+# Field origin: bottom-right corner, +x toward cave, +y toward left wall
+TAG_POSITIONS = {
+    # West wall (back wall, x≈0) — IDs 0-4 indicate bucket deposit zone
+    # All at same position, tag faces +x into the field
+    0: (0.01, 0.565, 0.0),
+    1: (0.01, 0.565, 0.0),
+    2: (0.01, 0.565, 0.0),
+    3: (0.01, 0.565, 0.0),
+    4: (0.01, 0.565, 0.0),
+    # North wall (left wall, y≈1.22) — tag faces -y into the field
+    5: (0.812, 1.140, -np.pi / 2),
+    # South wall (right wall, y=0) — tag faces +y into the field
+    6: (1.1168, 0.0, np.pi / 2),
+    # East wall (cave side, x≈2.44) — tag faces -x into the field
+    7: (2.36, 0.57, np.pi),
+}
 
 
 def calibrate(picam2, board_size=(9, 6), square_size=1.0, min_frames=15, capture_interval=2.0):
@@ -217,16 +239,26 @@ class AprilTagDetector:
             debug=0
         )
 
-        # Camera parameters for IMX296 after 90° CW rotation.
+        # Camera parameters for IMX296 after 90° CCW rotation.
         #
         # The physical sensor captures 1480 (W) × 1110 (H).
-        # After cv2.ROTATE_90_CLOCKWISE the frame becomes 1110 (W) × 1480 (H).
+        # After cv2.ROTATE_90_COUNTERCLOCKWISE the frame becomes 1110 (W) × 1480 (H).
         # The principal point axes swap accordingly:
         #   cx (horizontal centre) = 1110 / 2 = 555
         #   cy (vertical centre)   = 1480 / 2 = 740
         # fx and fy are swapped to match the new axis assignment.
         # These are uncalibrated estimates — proper camera calibration will
         # improve pose accuracy significantly.
+        #
+        # pose_t from pyapriltags is in the rotated camera's coordinate frame:
+        # Raw pose_t from pyapriltags is in the tilted camera's frame.
+        # We apply a pitch correction of +40° (CAMERA_TILT_DEG) before publishing
+        # so the NT values are in the robot's horizontal frame:
+        #   pose_tx = lateral offset (+ = right in image, unchanged by tilt)
+        #   pose_ty = vertical offset (+ = below robot horizontal plane)
+        #   pose_tz = horizontal depth (+ = away from camera, along ground plane)
+        # The camera is rear-mounted, so the RIO must combine these with the
+        # robot's current heading (theta) to convert into field-relative coords.
         if camera_params is None:
             self.fx = 500  # Focal length along new X axis (was Y on raw sensor)
             self.fy = 500  # Focal length along new Y axis (was X on raw sensor)
@@ -298,6 +330,11 @@ class AprilTagDetector:
         # Capture timestamp in RIO FPGA time (microseconds), converted via NT4 clock sync
         self.tag_timestamp_entry = self.vision_table.getIntegerTopic("tag_timestamp_us").publish()
 
+        # Field-relative robot pose (computed from AprilTag known positions + pose)
+        self.robot_field_x_entry     = self.vision_table.getDoubleTopic("robot_field_x").publish()
+        self.robot_field_y_entry     = self.vision_table.getDoubleTopic("robot_field_y").publish()
+        self.robot_field_theta_entry = self.vision_table.getDoubleTopic("robot_field_theta").publish()
+
         self.heartbeat_entry   = self.vision_table.getIntegerTopic("heartbeat").publish()
         self.heartbeat_counter = 0
         self.start_light_entry = self.vision_table.getBooleanTopic("start_light_detected").publish()
@@ -311,11 +348,82 @@ class AprilTagDetector:
 
         Returns RIO-relative timestamp in microseconds, or -1 if not synced yet.
         """
-        local_time_us = self.nt_inst.now()  # local NT time in microseconds
-        offset = self.nt_inst.getServerTimeOffset()  # None if not synced
+        local_time_us = time.monotonic_ns() // 1000
+        offset = self.nt_inst.getServerTimeOffset()
         if offset is None:
             return -1
         return local_time_us + offset
+
+    @staticmethod
+    def correct_pose_tilt(pose_t):
+        """
+        Rotate pose_t from the tilted camera frame to the robot's horizontal frame.
+        Applies a pitch correction of +CAMERA_TILT_DEG around the camera X axis.
+
+        Returns corrected (tx, ty, tz) tuple in metres.
+        """
+        tx = float(pose_t[0])  # lateral — unaffected by pitch
+        ty = float(pose_t[1])
+        tz = float(pose_t[2])
+        cos_a = np.cos(CAMERA_TILT_RAD)
+        sin_a = np.sin(CAMERA_TILT_RAD)
+        ty_corrected = ty * cos_a - tz * sin_a
+        tz_corrected = ty * sin_a + tz * cos_a
+        return tx, ty_corrected, tz_corrected
+
+    @staticmethod
+    def compute_field_pose(tag):
+        """
+        Compute the robot's field-relative position and heading from a single
+        AprilTag detection using the full pose_R rotation matrix.
+
+        The rotation chain: camera frame → tag frame → field frame
+        handles camera tilt, image rotation, and rear mounting implicitly —
+        no separate tilt correction needed.
+
+        Returns (robot_x, robot_y, robot_theta) or None if tag ID is unknown.
+        """
+        tag_info = TAG_POSITIONS.get(tag.tag_id)
+        if tag_info is None or tag.pose_R is None or tag.pose_t is None:
+            return None
+
+        tag_x, tag_y, facing_angle = tag_info
+
+        # Build rotation from tag frame to field frame.
+        # Tag mounted upright on a vertical wall:
+        #   Tag +Z = wall normal = (cos φ, sin φ, 0)  → into the field
+        #   Tag +Y = down        = (0, 0, -1)
+        #   Tag +X = along wall  = (sin φ, -cos φ, 0) → right when facing the tag
+        cos_f = np.cos(facing_angle)
+        sin_f = np.sin(facing_angle)
+        R_tag_to_field = np.array([
+            [sin_f,  0, cos_f],
+            [-cos_f, 0, sin_f],
+            [0,     -1, 0]
+        ])
+
+        # pose_R: tag frame → camera frame (rotated image coords)
+        # Full rotation: camera frame → field frame
+        R_cam_to_field = R_tag_to_field @ tag.pose_R.T
+
+        # Camera-to-tag vector in field coordinates
+        pose_t = tag.pose_t.flatten()
+        field_offset = R_cam_to_field @ pose_t
+
+        # Robot position (camera ≈ robot center for now)
+        robot_x = tag_x - field_offset[0]
+        robot_y = tag_y - field_offset[1]
+
+        # Camera heading: direction camera's optical axis (+Z) points in field coords
+        cam_forward = R_cam_to_field[:, 2]
+        camera_heading = np.arctan2(cam_forward[1], cam_forward[0])
+
+        # Robot heading: camera is rear-mounted → robot faces opposite direction
+        robot_theta = camera_heading + np.pi
+        # Normalize to [-π, π]
+        robot_theta = (robot_theta + np.pi) % (2 * np.pi) - np.pi
+
+        return robot_x, robot_y, robot_theta
 
     def publish_detections(self, tags, capture_timestamp_us):
         self.heartbeat_counter += 1
@@ -334,9 +442,10 @@ class AprilTagDetector:
             self.tag_decision_margin_entry.set(float(primary.decision_margin))
 
             if primary.pose_t is not None:
-                self.tag_pose_tx_entry.set(float(primary.pose_t[0]))
-                self.tag_pose_ty_entry.set(float(primary.pose_t[1]))
-                self.tag_pose_tz_entry.set(float(primary.pose_t[2]))
+                tx, ty, tz = self.correct_pose_tilt(primary.pose_t)
+                self.tag_pose_tx_entry.set(tx)
+                self.tag_pose_ty_entry.set(ty)
+                self.tag_pose_tz_entry.set(tz)
                 self.tag_pose_err_entry.set(float(primary.pose_err))
             else:
                 self.tag_pose_tx_entry.set(0.0)
@@ -351,9 +460,17 @@ class AprilTagDetector:
                 float(np.linalg.norm(t.pose_t)) if t.pose_t is not None else -1.0
                 for t in tags
             ])
-            self.tags_pose_tx_entry.set([float(t.pose_t[0]) if t.pose_t is not None else 0.0 for t in tags])
-            self.tags_pose_ty_entry.set([float(t.pose_t[1]) if t.pose_t is not None else 0.0 for t in tags])
-            self.tags_pose_tz_entry.set([float(t.pose_t[2]) if t.pose_t is not None else 0.0 for t in tags])
+            corrected = [self.correct_pose_tilt(t.pose_t) if t.pose_t is not None else (0.0, 0.0, 0.0) for t in tags]
+            self.tags_pose_tx_entry.set([c[0] for c in corrected])
+            self.tags_pose_ty_entry.set([c[1] for c in corrected])
+            self.tags_pose_tz_entry.set([c[2] for c in corrected])
+
+            # Field-relative pose from the primary tag
+            field_pose = self.compute_field_pose(primary)
+            if field_pose is not None:
+                self.robot_field_x_entry.set(field_pose[0])
+                self.robot_field_y_entry.set(field_pose[1])
+                self.robot_field_theta_entry.set(field_pose[2])
         else:
             self.tag_detected_entry.set(False)
             self.tag_id_entry.set(-1)
@@ -482,11 +599,33 @@ class AprilTagDetector:
                 tags = self.detect_tags(frame)
                 self.publish_detections(tags, capture_timestamp_us)
 
+                if tags:
+                    for tag in tags:
+                        if tag.pose_t is not None:
+                            field = self.compute_field_pose(tag)
+                            dist = np.linalg.norm(tag.pose_t)
+                            if field is not None:
+                                fx, fy, ft = field
+                                print(f"[NT] id={tag.tag_id}  "
+                                      f"field=({fx:.3f}, {fy:.3f}, {np.degrees(ft):.1f}°)  "
+                                      f"dist={dist:.3f}m  "
+                                      f"err={tag.pose_err:.4f}  "
+                                      f"margin={tag.decision_margin:.1f}  "
+                                      f"ts={capture_timestamp_us}")
+                            else:
+                                print(f"[NT] id={tag.tag_id}  "
+                                      f"field=UNKNOWN_TAG  dist={dist:.3f}m  "
+                                      f"ts={capture_timestamp_us}")
+                        else:
+                            print(f"[NT] id={tag.tag_id}  "
+                                  f"px=({tag.center[0]:.1f}, {tag.center[1]:.1f})  "
+                                  f"pose=N/A  ts={capture_timestamp_us}")
+                elif self.heartbeat_counter % 50 == 0:
+                    print(f"[NT] no tags | heartbeat={self.heartbeat_counter} | ts={capture_timestamp_us}")
+
                 if self.display:
                     for tag in tags:
                         self.draw_detection(frame, tag)
-                        print(f"Tag ID {tag.tag_id} | X:{tag.center[0]:.1f} Y:{tag.center[1]:.1f}"
-                              + (f" Dist:{np.linalg.norm(tag.pose_t):.3f}m" if tag.pose_t is not None else ""))
 
                     # FPS overlay
                     fps_counter += 1
