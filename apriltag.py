@@ -46,7 +46,7 @@ TAG_POSITIONS = {
 }
 
 
-def calibrate(picam2, board_size=(9, 6), square_size=1.0, min_frames=15, capture_interval=2.0):
+def calibrate(picam2, board_size=(9, 6), square_size=0.025, min_frames=15, capture_interval=4.0):
     """
     Calibrate camera from live Picamera2 feed with a printed chessboard.
 
@@ -686,7 +686,7 @@ if __name__ == "__main__":
         picam2.start()
         time.sleep(2)
 
-        result = calibrate(picam2, board_size=board)
+        result = calibrate(picam2, board_size=board, square_size=0.025)
         picam2.stop()
         if result is None:
             print("Calibration failed.")
