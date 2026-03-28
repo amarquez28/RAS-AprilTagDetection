@@ -311,8 +311,23 @@ class AprilTagDetector:
 
         Returns RIO-relative timestamp in microseconds, or -1 if not synced yet.
         """
-        local_time_us = self.nt_inst.now()  # local NT time in microseconds
-        offset = self.nt_inst.getServerTimeOffset()  # None if not synced
+        try:
+            # Try C++-style names first (pyntcore wraps C++ directly)
+            local_time_us = self.nt_inst.Now()
+        except AttributeError:
+            try:
+                local_time_us = self.nt_inst.now()
+            except AttributeError:
+                return -1
+
+        try:
+            offset = self.nt_inst.GetServerTimeOffset()
+        except AttributeError:
+            try:
+                offset = self.nt_inst.getServerTimeOffset()
+            except AttributeError:
+                return -1
+
         if offset is None:
             return -1
         return local_time_us + offset
