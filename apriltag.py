@@ -21,6 +21,8 @@ except ImportError:
             return np.zeros((480, 640, 3), dtype=np.uint8)  # blank frame
 
 CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calibration_params.npz')
+CAMERA_TILT_DEG = 40.0  # Camera tilts 40° downward from horizontal
+CAMERA_TILT_RAD = np.radians(CAMERA_TILT_DEG)
 display = True
 
 
@@ -229,12 +231,14 @@ class AprilTagDetector:
         # improve pose accuracy significantly.
         #
         # pose_t from pyapriltags is in the rotated camera's coordinate frame:
-        #   pose_t[0] (tx) = horizontal offset in rotated image (+ = right in image)
-        #   pose_t[1] (ty) = vertical offset in rotated image (+ = down in image)
-        #   pose_t[2] (tz) = depth along optical axis (+ = away from camera)
-        # The camera is rear-mounted, so "away from camera" = toward the tag.
-        # The RIO must combine these with the robot's current heading (theta)
-        # to convert into field-relative coordinates.
+        # Raw pose_t from pyapriltags is in the tilted camera's frame.
+        # We apply a pitch correction of +40° (CAMERA_TILT_DEG) before publishing
+        # so the NT values are in the robot's horizontal frame:
+        #   pose_tx = lateral offset (+ = right in image, unchanged by tilt)
+        #   pose_ty = vertical offset (+ = below robot horizontal plane)
+        #   pose_tz = horizontal depth (+ = away from camera, along ground plane)
+        # The camera is rear-mounted, so the RIO must combine these with the
+        # robot's current heading (theta) to convert into field-relative coords.
         if camera_params is None:
             self.fx = 500  # Focal length along new X axis (was Y on raw sensor)
             self.fy = 500  # Focal length along new Y axis (was X on raw sensor)
@@ -325,6 +329,23 @@ class AprilTagDetector:
             return -1
         return local_time_us + offset
 
+    @staticmethod
+    def correct_pose_tilt(pose_t):
+        """
+        Rotate pose_t from the tilted camera frame to the robot's horizontal frame.
+        Applies a pitch correction of +CAMERA_TILT_DEG around the camera X axis.
+
+        Returns corrected (tx, ty, tz) tuple in metres.
+        """
+        tx = float(pose_t[0])  # lateral — unaffected by pitch
+        ty = float(pose_t[1])
+        tz = float(pose_t[2])
+        cos_a = np.cos(CAMERA_TILT_RAD)
+        sin_a = np.sin(CAMERA_TILT_RAD)
+        ty_corrected = ty * cos_a - tz * sin_a
+        tz_corrected = ty * sin_a + tz * cos_a
+        return tx, ty_corrected, tz_corrected
+
     def publish_detections(self, tags, capture_timestamp_us):
         self.heartbeat_counter += 1
         self.heartbeat_entry.set(self.heartbeat_counter)
@@ -342,9 +363,10 @@ class AprilTagDetector:
             self.tag_decision_margin_entry.set(float(primary.decision_margin))
 
             if primary.pose_t is not None:
-                self.tag_pose_tx_entry.set(float(primary.pose_t[0]))
-                self.tag_pose_ty_entry.set(float(primary.pose_t[1]))
-                self.tag_pose_tz_entry.set(float(primary.pose_t[2]))
+                tx, ty, tz = self.correct_pose_tilt(primary.pose_t)
+                self.tag_pose_tx_entry.set(tx)
+                self.tag_pose_ty_entry.set(ty)
+                self.tag_pose_tz_entry.set(tz)
                 self.tag_pose_err_entry.set(float(primary.pose_err))
             else:
                 self.tag_pose_tx_entry.set(0.0)
@@ -359,9 +381,10 @@ class AprilTagDetector:
                 float(np.linalg.norm(t.pose_t)) if t.pose_t is not None else -1.0
                 for t in tags
             ])
-            self.tags_pose_tx_entry.set([float(t.pose_t[0]) if t.pose_t is not None else 0.0 for t in tags])
-            self.tags_pose_ty_entry.set([float(t.pose_t[1]) if t.pose_t is not None else 0.0 for t in tags])
-            self.tags_pose_tz_entry.set([float(t.pose_t[2]) if t.pose_t is not None else 0.0 for t in tags])
+            corrected = [self.correct_pose_tilt(t.pose_t) if t.pose_t is not None else (0.0, 0.0, 0.0) for t in tags]
+            self.tags_pose_tx_entry.set([c[0] for c in corrected])
+            self.tags_pose_ty_entry.set([c[1] for c in corrected])
+            self.tags_pose_tz_entry.set([c[2] for c in corrected])
         else:
             self.tag_detected_entry.set(False)
             self.tag_id_entry.set(-1)
@@ -493,7 +516,7 @@ class AprilTagDetector:
                 if tags:
                     for tag in tags:
                         if tag.pose_t is not None:
-                            tx, ty, tz = float(tag.pose_t[0]), float(tag.pose_t[1]), float(tag.pose_t[2])
+                            tx, ty, tz = self.correct_pose_tilt(tag.pose_t)
                             dist = np.linalg.norm(tag.pose_t)
                             print(f"[NT] id={tag.tag_id}  "
                                   f"px=({tag.center[0]:.1f}, {tag.center[1]:.1f})  "
