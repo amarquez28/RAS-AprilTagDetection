@@ -806,7 +806,7 @@ if __name__ == "__main__":
 
     # --- Monitor mode: python apriltag.py --monitor [rio_ip] ---
     if len(sys.argv) >= 2 and sys.argv[1] == '--monitor':
-        rio_ip = sys.argv[2] if len(sys.argv) >= 3 else "10.0.0.2"
+        rio_ip = sys.argv[2] if len(sys.argv) >= 3 else "10.0.67.2"
         monitor_rio(roborio_ip=rio_ip)
         sys.exit(0)
 
