@@ -217,16 +217,24 @@ class AprilTagDetector:
             debug=0
         )
 
-        # Camera parameters for IMX296 after 90° CW rotation.
+        # Camera parameters for IMX296 after 90° CCW rotation.
         #
         # The physical sensor captures 1480 (W) × 1110 (H).
-        # After cv2.ROTATE_90_CLOCKWISE the frame becomes 1110 (W) × 1480 (H).
+        # After cv2.ROTATE_90_COUNTERCLOCKWISE the frame becomes 1110 (W) × 1480 (H).
         # The principal point axes swap accordingly:
         #   cx (horizontal centre) = 1110 / 2 = 555
         #   cy (vertical centre)   = 1480 / 2 = 740
         # fx and fy are swapped to match the new axis assignment.
         # These are uncalibrated estimates — proper camera calibration will
         # improve pose accuracy significantly.
+        #
+        # pose_t from pyapriltags is in the rotated camera's coordinate frame:
+        #   pose_t[0] (tx) = horizontal offset in rotated image (+ = right in image)
+        #   pose_t[1] (ty) = vertical offset in rotated image (+ = down in image)
+        #   pose_t[2] (tz) = depth along optical axis (+ = away from camera)
+        # The camera is rear-mounted, so "away from camera" = toward the tag.
+        # The RIO must combine these with the robot's current heading (theta)
+        # to convert into field-relative coordinates.
         if camera_params is None:
             self.fx = 500  # Focal length along new X axis (was Y on raw sensor)
             self.fy = 500  # Focal length along new Y axis (was X on raw sensor)
@@ -311,23 +319,8 @@ class AprilTagDetector:
 
         Returns RIO-relative timestamp in microseconds, or -1 if not synced yet.
         """
-        try:
-            # Try C++-style names first (pyntcore wraps C++ directly)
-            local_time_us = self.nt_inst.Now()
-        except AttributeError:
-            try:
-                local_time_us = self.nt_inst.now()
-            except AttributeError:
-                return -1
-
-        try:
-            offset = self.nt_inst.GetServerTimeOffset()
-        except AttributeError:
-            try:
-                offset = self.nt_inst.getServerTimeOffset()
-            except AttributeError:
-                return -1
-
+        local_time_us = time.monotonic_ns() // 1000
+        offset = self.nt_inst.getServerTimeOffset()
         if offset is None:
             return -1
         return local_time_us + offset
@@ -497,11 +490,28 @@ class AprilTagDetector:
                 tags = self.detect_tags(frame)
                 self.publish_detections(tags, capture_timestamp_us)
 
+                if tags:
+                    for tag in tags:
+                        if tag.pose_t is not None:
+                            tx, ty, tz = float(tag.pose_t[0]), float(tag.pose_t[1]), float(tag.pose_t[2])
+                            dist = np.linalg.norm(tag.pose_t)
+                            print(f"[NT] id={tag.tag_id}  "
+                                  f"px=({tag.center[0]:.1f}, {tag.center[1]:.1f})  "
+                                  f"pose=({tx:.3f}, {ty:.3f}, {tz:.3f})m  "
+                                  f"dist={dist:.3f}m  "
+                                  f"err={tag.pose_err:.4f}  "
+                                  f"margin={tag.decision_margin:.1f}  "
+                                  f"ts={capture_timestamp_us}")
+                        else:
+                            print(f"[NT] id={tag.tag_id}  "
+                                  f"px=({tag.center[0]:.1f}, {tag.center[1]:.1f})  "
+                                  f"pose=N/A  ts={capture_timestamp_us}")
+                elif self.heartbeat_counter % 50 == 0:
+                    print(f"[NT] no tags | heartbeat={self.heartbeat_counter} | ts={capture_timestamp_us}")
+
                 if self.display:
                     for tag in tags:
                         self.draw_detection(frame, tag)
-                        print(f"Tag ID {tag.tag_id} | X:{tag.center[0]:.1f} Y:{tag.center[1]:.1f}"
-                              + (f" Dist:{np.linalg.norm(tag.pose_t):.3f}m" if tag.pose_t is not None else ""))
 
                     # FPS overlay
                     fps_counter += 1
