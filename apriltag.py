@@ -90,6 +90,13 @@ def calibrate(picam2, board_size=(9, 6), square_size=0.025, min_frames=15, captu
         if now - last_capture >= capture_interval:
             last_capture = now
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Save first attempt for debugging
+            if used_count == 0 and not hasattr(calibrate, '_saved_debug'):
+                cv2.imwrite('calibration_debug.png', frame_gray)
+                print(f"[calibrate] Saved debug frame to calibration_debug.png ({frame_gray.shape})")
+                calibrate._saved_debug = True
+
             found, corners = cv2.findChessboardCorners(
                 frame_gray, board_size,
                 cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
