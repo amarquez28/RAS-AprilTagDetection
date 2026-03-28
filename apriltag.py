@@ -693,8 +693,122 @@ class AprilTagDetector:
         print("Cleanup complete")
 
 
+def monitor_rio(roborio_ip="10.0.67.2", interval=0.25):
+    """
+    Subscribe to SmartDashboard/Test/* from the RIO and print a live table.
+    Run with: python apriltag.py --monitor
+    """
+    import ntcore
+
+    inst = ntcore.NetworkTableInstance.getDefault()
+    inst.setServer(roborio_ip)
+    inst.startClient4("pi-monitor")
+
+    sd = inst.getTable("SmartDashboard")
+
+    # All the Test/ keys the RIO publishes (grouped for readability)
+    bool_keys = [
+        "Test/Vision Connected", "Test/Has Target", "Test/Field Pose Valid",
+    ]
+    num_keys = [
+        "Test/Tag Count",
+        "Test/Primary ID", "Test/Primary Pixel X", "Test/Primary Pixel Y",
+        "Test/Primary Distance (m)",
+        "Test/Pose TX (m)", "Test/Pose TY (m)", "Test/Pose TZ (m)",
+        "Test/Pose Error", "Test/Decision Margin", "Test/Timestamp us",
+        "Test/Field X (m)", "Test/Field Y (m)",
+        "Test/Field Theta (rad)", "Test/Field Theta (deg)",
+        "Test/Odom X (m)", "Test/Odom Y (m)", "Test/Odom Theta (rad)",
+        "Test/Delta X (m)", "Test/Delta Y (m)", "Test/Delta Theta (rad)",
+        "Test/IMU Theta (rad)", "Test/IMU Theta (deg)",
+        "Test/Vision Latency (ms)",
+    ]
+    str_keys = [
+        "Auto/Phase", "Test/Visible Tags",
+    ]
+
+    bool_subs = {k: sd.getBooleanTopic(k).subscribe(False) for k in bool_keys}
+    num_subs  = {k: sd.getDoubleTopic(k).subscribe(float('nan')) for k in num_keys}
+    str_subs  = {k: sd.getStringTopic(k).subscribe("") for k in str_keys}
+
+    print(f"[monitor] Connecting to RIO at {roborio_ip}  (Ctrl-C to quit)")
+    print(f"[monitor] Refreshing every {interval}s\n")
+
+    try:
+        while True:
+            connected = inst.isConnected()
+            # Clear screen and print header
+            print("\033[2J\033[H", end="")  # ANSI clear + home
+            print(f"{'═' * 60}")
+            print(f"  RIO TEST MONITOR   NT4: {'CONNECTED' if connected else 'DISCONNECTED'}")
+            print(f"{'═' * 60}")
+
+            if not connected:
+                print("\n  Waiting for NetworkTables connection...")
+                time.sleep(interval)
+                continue
+
+            # Strings
+            for k, sub in str_subs.items():
+                label = k.replace("Test/", "").replace("Auto/", "")
+                print(f"  {label:30s}  {sub.get()}")
+
+            # Booleans
+            for k, sub in bool_subs.items():
+                label = k.replace("Test/", "")
+                val = sub.get()
+                icon = "✓" if val else "✗"
+                print(f"  {label:30s}  {icon}  ({val})")
+
+            print(f"{'─' * 60}")
+            print(f"  {'KEY':30s}  {'VALUE':>12s}")
+            print(f"{'─' * 60}")
+
+            # Numbers
+            for k, sub in num_subs.items():
+                label = k.replace("Test/", "")
+                val = sub.get()
+                if val != val:  # NaN check — key not published yet
+                    print(f"  {label:30s}  {'---':>12s}")
+                elif "ID" in label or "Count" in label:
+                    print(f"  {label:30s}  {int(val):>12d}")
+                elif "Pixel" in label or "us" in label.lower():
+                    print(f"  {label:30s}  {val:>12.0f}")
+                else:
+                    print(f"  {label:30s}  {val:>12.4f}")
+
+            # Per-tag array (check for Tag[0], Tag[1], etc.)
+            print(f"{'─' * 60}")
+            for i in range(8):
+                prefix = f"Test/Tag[{i}]/"
+                id_sub = sd.getDoubleTopic(prefix + "ID").subscribe(float('nan'))
+                tag_id = id_sub.get()
+                if tag_id != tag_id:  # NaN — no more tags
+                    break
+                dist = sd.getDoubleTopic(prefix + "Distance (m)").subscribe(0).get()
+                tx = sd.getDoubleTopic(prefix + "Pose TX (m)").subscribe(0).get()
+                ty = sd.getDoubleTopic(prefix + "Pose TY (m)").subscribe(0).get()
+                tz = sd.getDoubleTopic(prefix + "Pose TZ (m)").subscribe(0).get()
+                print(f"  Tag[{i}]  ID={int(tag_id):2d}  dist={dist:.3f}m  "
+                      f"tx={tx:.3f}  ty={ty:.3f}  tz={tz:.3f}")
+
+            print(f"{'═' * 60}")
+            time.sleep(interval)
+
+    except KeyboardInterrupt:
+        print("\n[monitor] Stopped.")
+    finally:
+        inst.stopClient()
+
+
 if __name__ == "__main__":
     import sys
+
+    # --- Monitor mode: python apriltag.py --monitor [rio_ip] ---
+    if len(sys.argv) >= 2 and sys.argv[1] == '--monitor':
+        rio_ip = sys.argv[2] if len(sys.argv) >= 3 else "10.0.0.2"
+        monitor_rio(roborio_ip=rio_ip)
+        sys.exit(0)
 
     # --- Calibration mode: python apriltag.py --calibrate [cols rows] ---
     if len(sys.argv) >= 2 and sys.argv[1] == '--calibrate':
