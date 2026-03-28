@@ -630,24 +630,25 @@ class AprilTagDetector:
                         if tag.pose_t is not None:
                             field = self.compute_field_pose(tag)
                             dist = np.linalg.norm(tag.pose_t)
+                            pt = tag.pose_t.flatten()
                             if field is not None:
                                 fx, fy, ft = field
                                 print(f"[NT] id={tag.tag_id}  "
-                                      f"field=({fx:.3f}, {fy:.3f}, {np.degrees(ft):.1f}°)  "
+                                      f"field=({fx:.3f}, {fy:.3f}, θ={ft:.3f}rad)  "
                                       f"dist={dist:.3f}m  "
+                                      f"raw_t=({pt[0]:.3f}, {pt[1]:.3f}, {pt[2]:.3f})  "
                                       f"err={tag.pose_err:.4f}  "
-                                      f"margin={tag.decision_margin:.1f}  "
-                                      f"ts={capture_timestamp_us}")
+                                      f"margin={tag.decision_margin:.1f}")
                             else:
                                 print(f"[NT] id={tag.tag_id}  "
                                       f"field=UNKNOWN_TAG  dist={dist:.3f}m  "
-                                      f"ts={capture_timestamp_us}")
+                                      f"raw_t=({pt[0]:.3f}, {pt[1]:.3f}, {pt[2]:.3f})")
                         else:
                             print(f"[NT] id={tag.tag_id}  "
                                   f"px=({tag.center[0]:.1f}, {tag.center[1]:.1f})  "
-                                  f"pose=N/A  ts={capture_timestamp_us}")
+                                  f"pose=N/A")
                 elif self.heartbeat_counter % 50 == 0:
-                    print(f"[NT] no tags | heartbeat={self.heartbeat_counter} | ts={capture_timestamp_us}")
+                    print(f"[NT] no tags | heartbeat={self.heartbeat_counter}")
 
                 if self.display:
                     for tag in tags:
