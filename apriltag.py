@@ -30,7 +30,7 @@ CAMERA_TILT_RAD = np.radians(CAMERA_TILT_DEG)
 CAMERA_OFFSET_X = 0.08255   # 3.25 inches forward
 CAMERA_OFFSET_Y = 0.0635    # 2.5 inches left
 
-display = True
+display = False
 
 # ── Known AprilTag field positions ────────────────────────────────────────────
 # Format: tag_id → (field_x, field_y, facing_angle_rad)
