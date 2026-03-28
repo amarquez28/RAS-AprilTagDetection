@@ -90,7 +90,10 @@ def calibrate(picam2, board_size=(9, 6), square_size=0.025, min_frames=15, captu
         if now - last_capture >= capture_interval:
             last_capture = now
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            found, corners = cv2.findChessboardCorners(frame_gray, board_size, None)
+            found, corners = cv2.findChessboardCorners(
+                frame_gray, board_size,
+                cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
+            )
 
             if found:
                 corners_refined = cv2.cornerSubPix(frame_gray, corners, (11, 11), (-1, -1), term_criteria)
