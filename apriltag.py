@@ -27,8 +27,8 @@ CAMERA_TILT_RAD = np.radians(CAMERA_TILT_DEG)
 # Camera offset from robot center in robot frame (metres)
 # +x = robot forward (toward front/intake), +y = robot left
 # From measurements: camera is 3.25in forward, 2.5in left of center
-CAMERA_OFFSET_X = 0.08255   # 3.25 inches forward
-CAMERA_OFFSET_Y = 0.0635    # 2.5 inches left
+CAMERA_OFFSET_X = -0.08255   # 3.25 inches behind robot center (-x in robot frame)
+CAMERA_OFFSET_Y = -0.0635    # 2.5 inches right of robot center (-y in robot frame)
 
 display = False
 
