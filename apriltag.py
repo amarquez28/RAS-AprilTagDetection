@@ -731,11 +731,28 @@ def monitor_rio(roborio_ip="10.0.67.2", interval=0.25):
     num_subs  = {k: sd.getDoubleTopic(k).subscribe(float('nan')) for k in num_keys}
     str_subs  = {k: sd.getStringTopic(k).subscribe("") for k in str_keys}
 
+    # Pre-create per-tag subscribers so they persist and receive updates
+    max_tags = 8
+    tag_subs = {}
+    for i in range(max_tags):
+        prefix = f"Test/Tag[{i}]/"
+        tag_subs[i] = {
+            "ID":            sd.getDoubleTopic(prefix + "ID").subscribe(float('nan')),
+            "Distance (m)":  sd.getDoubleTopic(prefix + "Distance (m)").subscribe(0),
+            "Pose TX (m)":   sd.getDoubleTopic(prefix + "Pose TX (m)").subscribe(0),
+            "Pose TY (m)":   sd.getDoubleTopic(prefix + "Pose TY (m)").subscribe(0),
+            "Pose TZ (m)":   sd.getDoubleTopic(prefix + "Pose TZ (m)").subscribe(0),
+        }
+
     print(f"[monitor] Connecting to RIO at {roborio_ip}  (Ctrl-C to quit)")
     print(f"[monitor] Refreshing every {interval}s\n")
 
     try:
         while True:
+            # Let NT process incoming data before we read
+            inst.flush()
+            time.sleep(interval)
+
             connected = inst.isConnected()
             # Clear screen and print header
             print("\033[2J\033[H", end="")  # ANSI clear + home
@@ -745,7 +762,6 @@ def monitor_rio(roborio_ip="10.0.67.2", interval=0.25):
 
             if not connected:
                 print("\n  Waiting for NetworkTables connection...")
-                time.sleep(interval)
                 continue
 
             # Strings
@@ -777,23 +793,20 @@ def monitor_rio(roborio_ip="10.0.67.2", interval=0.25):
                 else:
                     print(f"  {label:30s}  {val:>12.4f}")
 
-            # Per-tag array (check for Tag[0], Tag[1], etc.)
+            # Per-tag array (persistent subscribers)
             print(f"{'─' * 60}")
-            for i in range(8):
-                prefix = f"Test/Tag[{i}]/"
-                id_sub = sd.getDoubleTopic(prefix + "ID").subscribe(float('nan'))
-                tag_id = id_sub.get()
-                if tag_id != tag_id:  # NaN — no more tags
+            for i in range(max_tags):
+                tag_id = tag_subs[i]["ID"].get()
+                if tag_id != tag_id:  # NaN — not published
                     break
-                dist = sd.getDoubleTopic(prefix + "Distance (m)").subscribe(0).get()
-                tx = sd.getDoubleTopic(prefix + "Pose TX (m)").subscribe(0).get()
-                ty = sd.getDoubleTopic(prefix + "Pose TY (m)").subscribe(0).get()
-                tz = sd.getDoubleTopic(prefix + "Pose TZ (m)").subscribe(0).get()
+                dist = tag_subs[i]["Distance (m)"].get()
+                tx   = tag_subs[i]["Pose TX (m)"].get()
+                ty   = tag_subs[i]["Pose TY (m)"].get()
+                tz   = tag_subs[i]["Pose TZ (m)"].get()
                 print(f"  Tag[{i}]  ID={int(tag_id):2d}  dist={dist:.3f}m  "
                       f"tx={tx:.3f}  ty={ty:.3f}  tz={tz:.3f}")
 
             print(f"{'═' * 60}")
-            time.sleep(interval)
 
     except KeyboardInterrupt:
         print("\n[monitor] Stopped.")
