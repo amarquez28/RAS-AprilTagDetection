@@ -277,8 +277,10 @@ class AprilTagDetector:
         # The camera is rear-mounted, so the RIO must combine these with the
         # robot's current heading (theta) to convert into field-relative coords.
         if camera_params is None:
-            self.fx = 500  # Focal length along new X axis (was Y on raw sensor)
-            self.fy = 500  # Focal length along new Y axis (was X on raw sensor)
+            # Focal length calibrated from known-distance measurement:
+            # tag 0 at 0.715m actual → 0.383m reported with fx=500 → scale 1.867
+            self.fx = 933  # Focal length along new X axis (was Y on raw sensor)
+            self.fy = 933  # Focal length along new Y axis (was X on raw sensor)
             self.cx = 555  # Principal point x: half of rotated frame width  (1110/2)
             self.cy = 740  # Principal point y: half of rotated frame height (1480/2)
         else:
