@@ -308,6 +308,7 @@ class AprilTagDetector:
         self.picam2.start()
         time.sleep(2)  # Camera warm-up
 
+
     def setup_networktables(self, roborio_ip):
         self.nt_inst = NetworkTableInstance.getDefault()
         self.nt_inst.startClient4("apriltag_detector")
@@ -698,9 +699,8 @@ def monitor_rio(roborio_ip="10.0.67.2", interval=0.25):
     Subscribe to SmartDashboard/Test/* from the RIO and print a live table.
     Run with: python apriltag.py --monitor
     """
-    import ntcore
 
-    inst = ntcore.NetworkTableInstance.getDefault()
+    inst = NetworkTableInstance.getDefault()
     inst.setServer(roborio_ip)
     inst.startClient4("pi-monitor")
 
