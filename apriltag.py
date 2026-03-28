@@ -390,14 +390,22 @@ class AprilTagDetector:
         return tx, ty_corrected, tz_corrected
 
     @staticmethod
-    def compute_field_pose(tag):
+    def compute_field_pose(tag, debug=False):
         """
         Compute the robot's field-relative position and heading from a single
         AprilTag detection using the full pose_R rotation matrix.
 
-        The rotation chain: camera frame → tag frame → field frame
-        handles camera tilt, image rotation, and rear mounting implicitly —
-        no separate tilt correction needed.
+        pyapriltags tag coordinate convention:
+          Tag +X = right (when looking at the tag face)
+          Tag +Y = down
+          Tag +Z = into the tag / into the wall (away from camera)
+
+        For a tag on a wall with facing_angle φ (direction tag front faces,
+        i.e. the outward normal = -Z_tag in field coords):
+          Tag -Z in field = (cos φ, sin φ, 0)  → outward normal into the field
+          Tag +Z in field = (-cos φ, -sin φ, 0) → into the wall
+          Tag +Y in field = (0, 0, -1)          → down (gravity)
+          Tag +X in field = (-sin φ, cos φ, 0)  → right when facing the tag
 
         Returns (robot_x, robot_y, robot_theta) or None if tag ID is unknown.
         """
@@ -407,30 +415,28 @@ class AprilTagDetector:
 
         tag_x, tag_y, facing_angle = tag_info
 
-        # Build rotation from tag frame to field frame.
-        # Tag mounted upright on a vertical wall:
-        #   Tag +Z = wall normal = (cos φ, sin φ, 0)  → into the field
-        #   Tag +Y = down        = (0, 0, -1)
-        #   Tag +X = along wall  = (sin φ, -cos φ, 0) → right when facing the tag
+        # R_tag_to_field columns are tag +X, +Y, +Z expressed in field coords.
         cos_f = np.cos(facing_angle)
         sin_f = np.sin(facing_angle)
         R_tag_to_field = np.array([
-            [sin_f,  0, cos_f],
-            [-cos_f, 0, sin_f],
-            [0,     -1, 0]
+            [-sin_f,  0, -cos_f],
+            [ cos_f,  0, -sin_f],
+            [ 0,     -1,  0    ]
         ])
 
-        # pose_R: tag frame → camera frame (rotated image coords)
-        # Full rotation: camera frame → field frame
+        # pose_R rotates from tag frame → camera frame.
+        # pose_R.T rotates from camera frame → tag frame.
+        # R_tag_to_field @ pose_R.T = camera frame → field frame.
         R_cam_to_field = R_tag_to_field @ tag.pose_R.T
 
-        # Camera-to-tag vector in field coordinates
+        # pose_t is the tag position in camera coordinates.
+        # Transform to field coordinates:
         pose_t = tag.pose_t.flatten()
-        field_offset = R_cam_to_field @ pose_t
+        tag_in_field_offset = R_cam_to_field @ pose_t
 
-        # Camera position on the field
-        cam_field_x = tag_x - field_offset[0]
-        cam_field_y = tag_y - field_offset[1]
+        # Camera position = tag position - offset
+        cam_field_x = tag_x - tag_in_field_offset[0]
+        cam_field_y = tag_y - tag_in_field_offset[1]
 
         # Camera heading: direction camera's optical axis (+Z) points in field coords
         cam_forward = R_cam_to_field[:, 2]
@@ -442,12 +448,18 @@ class AprilTagDetector:
         robot_theta = (robot_theta + np.pi) % (2 * np.pi) - np.pi
 
         # Correct for camera offset from robot center.
-        # Camera is at (CAMERA_OFFSET_X, CAMERA_OFFSET_Y) in robot frame.
-        # Rotate that offset by robot heading to get field-frame offset.
         cos_t = np.cos(robot_theta)
         sin_t = np.sin(robot_theta)
         robot_x = cam_field_x - (CAMERA_OFFSET_X * cos_t - CAMERA_OFFSET_Y * sin_t)
         robot_y = cam_field_y - (CAMERA_OFFSET_X * sin_t + CAMERA_OFFSET_Y * cos_t)
+
+        if debug:
+            print(f"  [debug] R_tag_to_field:\n{R_tag_to_field}")
+            print(f"  [debug] pose_R:\n{tag.pose_R}")
+            print(f"  [debug] R_cam_to_field:\n{R_cam_to_field}")
+            print(f"  [debug] tag_in_field_offset: ({tag_in_field_offset[0]:.4f}, {tag_in_field_offset[1]:.4f}, {tag_in_field_offset[2]:.4f})")
+            print(f"  [debug] cam_pos: ({cam_field_x:.4f}, {cam_field_y:.4f})")
+            print(f"  [debug] cam_heading: {camera_heading:.4f}  robot_theta: {robot_theta:.4f}")
 
         return robot_x, robot_y, robot_theta
 
@@ -628,7 +640,8 @@ class AprilTagDetector:
                 if tags:
                     for tag in tags:
                         if tag.pose_t is not None:
-                            field = self.compute_field_pose(tag)
+                            do_debug = (self.heartbeat_counter % 100 == 1)
+                            field = self.compute_field_pose(tag, debug=do_debug)
                             dist = np.linalg.norm(tag.pose_t)
                             pt = tag.pose_t.flatten()
                             if field is not None:
