@@ -23,6 +23,13 @@ except ImportError:
 CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calibration_params.npz')
 CAMERA_TILT_DEG = 40.0  # Camera tilts 40° downward from horizontal
 CAMERA_TILT_RAD = np.radians(CAMERA_TILT_DEG)
+
+# Camera offset from robot center in robot frame (metres)
+# +x = robot forward (toward front/intake), +y = robot left
+# From measurements: camera is 3.25in forward, 2.5in left of center
+CAMERA_OFFSET_X = 0.08255   # 3.25 inches forward
+CAMERA_OFFSET_Y = 0.0635    # 2.5 inches left
+
 display = True
 
 # ── Known AprilTag field positions ────────────────────────────────────────────
@@ -420,9 +427,9 @@ class AprilTagDetector:
         pose_t = tag.pose_t.flatten()
         field_offset = R_cam_to_field @ pose_t
 
-        # Robot position (camera ≈ robot center for now)
-        robot_x = tag_x - field_offset[0]
-        robot_y = tag_y - field_offset[1]
+        # Camera position on the field
+        cam_field_x = tag_x - field_offset[0]
+        cam_field_y = tag_y - field_offset[1]
 
         # Camera heading: direction camera's optical axis (+Z) points in field coords
         cam_forward = R_cam_to_field[:, 2]
@@ -432,6 +439,14 @@ class AprilTagDetector:
         robot_theta = camera_heading + np.pi
         # Normalize to [-π, π]
         robot_theta = (robot_theta + np.pi) % (2 * np.pi) - np.pi
+
+        # Correct for camera offset from robot center.
+        # Camera is at (CAMERA_OFFSET_X, CAMERA_OFFSET_Y) in robot frame.
+        # Rotate that offset by robot heading to get field-frame offset.
+        cos_t = np.cos(robot_theta)
+        sin_t = np.sin(robot_theta)
+        robot_x = cam_field_x - (CAMERA_OFFSET_X * cos_t - CAMERA_OFFSET_Y * sin_t)
+        robot_y = cam_field_y - (CAMERA_OFFSET_X * sin_t + CAMERA_OFFSET_Y * cos_t)
 
         return robot_x, robot_y, robot_theta
 
