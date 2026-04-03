@@ -27,8 +27,18 @@ CAMERA_TILT_RAD = np.radians(CAMERA_TILT_DEG)
 # Camera offset from robot center in robot frame (metres)
 # +x = robot forward (toward front/intake), +y = robot left
 # From measurements: camera is 3.25in forward, 2.5in left of center
-CAMERA_OFFSET_X = -0.08255   # 3.25 inches behind robot center (-x in robot frame)
-CAMERA_OFFSET_Y = -0.0635    # 2.5 inches right of robot center (-y in robot frame)
+#CAMERA_OFFSET_X = -0.08255   # 3.25 inches behind robot center (-x in robot frame)
+#CAMERA_OFFSET_Y = -0.0635    # 2.5 inches right of robot center (-y in robot frame)
+
+#Camera extrinsics, camera pose relative to robot frame
+#Robot frame +x = forward, +y = left, +z = up
+CAMERA_EXT_X = -0.1125 #METERS BEHIND ROBOT CENTER
+CAMERA_EXT_Y = -0.0910 #METERS RIGHT OF ROBOT CENTER
+CAMERA_EXT_Z = 0.2230 #METERS ABOVE ROBOT ORIGIN
+
+CAMERA_EXT_YAW = 180.0 #CAMERA FACES BACKWARD
+CAMERA_EXT_PITCH = -40.0 #CAMERA TILTED DOWNWARD
+CAMERA_EXT_ROLL = 0.0
 
 display = False
 
@@ -45,9 +55,9 @@ TAG_POSITIONS = {
     3: (0.01, 0.565, 0.0),
     4: (0.01, 0.565, 0.0),
     # North wall (left wall, y≈1.22) — tag faces -y into the field
-    5: (0.812, 1.140, -np.pi / 2),
+    5: (0.812, 1.139, -np.pi / 2),
     # South wall (right wall, y=0) — tag faces +y into the field
-    6: (1.1168, 0.0, np.pi / 2),
+    6: (1.1168, 0.01, np.pi / 2),
     # East wall (cave side, x≈2.44) — tag faces -x into the field
     7: (2.36, 0.57, np.pi),
 }
@@ -181,6 +191,45 @@ def listen():
         except socket.timeout:
             pass
 
+def rot_x(a):
+    ca, sa = np.cos(a), np.sin(a)
+    return np.array([
+        [1,  0,   0],
+        [0, ca, -sa],
+        [0, sa,  ca]
+    ], dtype=float)
+
+def rot_y(a):
+    ca, sa = np.cos(a), np.sin(a)
+    return np.array([
+        [ ca, 0, sa],
+        [  0, 1,  0],
+        [-sa, 0, ca]
+    ], dtype=float)
+
+def rot_z(a):
+    ca, sa = np.cos(a), np.sin(a)
+    return np.array([
+        [ca, -sa, 0],
+        [sa,  ca, 0],
+        [ 0,   0, 1]
+    ], dtype=float)
+
+def make_transform(R, t):
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = R
+    T[:3,  3] = t
+    return T
+
+def get_robot_T_camera():
+    #returns T_robot_camera which tranforms points from camera frame into robot frame
+    yaw = np.radians(CAMERA_EXT_YAW)
+    pitch = np.radians(CAMERA_EXT_PITCH)
+    roll = np.radians(CAMERA_EXT_ROLL)
+    #Rotation from camera frame to robot frame, zyx order, yaw, pitch then roll
+    R_robot_camera = rot_z(yaw) @ rot_y(pitch) @ rot_x(roll)
+    t_robot_camera = np.array([CAMERA_EXT_X, CAMERA_EXT_Y, CAMERA_EXT_Z], dtype=float)
+    return make_transform(R_robot_camera, t_robot_camera)
 
 class DSPacketSender:
     """
@@ -420,48 +469,54 @@ class AprilTagDetector:
         # R_tag_to_field columns are tag +X, +Y, +Z expressed in field coords.
         cos_f = np.cos(facing_angle)
         sin_f = np.sin(facing_angle)
-        R_tag_to_field = np.array([
+        R_field_tag = np.array([
             [-sin_f,  0, -cos_f],
             [ cos_f,  0, -sin_f],
             [ 0,     -1,  0    ]
-        ])
+        ], dtype=float)
 
         # pose_R rotates from tag frame → camera frame.
         # pose_R.T rotates from camera frame → tag frame.
         # R_tag_to_field @ pose_R.T = camera frame → field frame.
-        R_cam_to_field = R_tag_to_field @ tag.pose_R.T
+        t_field_tag = np.array([tag_x, tag_y, 0.0], dtype=float)
+
+        T_field_tag = make_transform(R_field_tag, t_field_tag)
 
         # pose_t is the tag position in camera coordinates.
         # Transform to field coordinates:
-        pose_t = tag.pose_t.flatten()
-        tag_in_field_offset = R_cam_to_field @ pose_t
+        R_camera_tag = tag.pose_R
+        t_camera_tag = tag.pose_t.flatten()
 
-        # Camera position = tag position - offset
-        cam_field_x = tag_x - tag_in_field_offset[0]
-        cam_field_y = tag_y - tag_in_field_offset[1]
+        T_camera_tag = make_transform(R_camera_tag, t_camera_tag)
 
-        # Camera heading: direction camera's optical axis (+Z) points in field coords
-        cam_forward = R_cam_to_field[:, 2]
-        camera_heading = np.arctan2(cam_forward[1], cam_forward[0])
+        #invert to get camera pose in tag frame
+        T_tag_camera = np.linalg.inv(T_camera_tag)
 
-        # Robot heading: camera is rear-mounted → robot faces opposite direction
-        robot_theta = camera_heading + np.pi
-        # Normalize to [-π, π]
+        #camera pose in field frame
+        T_field_camera = T_field_tag @ T_tag_camera
+
+        #fixed robot pose relative to camera
+        T_robot_camera = get_robot_T_camera()
+
+        #robot pose in field frame
+        T_field_robot = T_field_camera @ np.linalg.inv(T_robot_camera)
+
+        robot_x = T_field_robot[0, 3]
+        robot_y = T_field_robot[1, 3]
+
+        #robot forward axis in field = first column of rotation matrix
+        robot_forward = T_field_robot[:3, 0]
+        robot_theta = np.arctan2(robot_forward[1], robot_forward[0])
         robot_theta = (robot_theta + np.pi) % (2 * np.pi) - np.pi
 
-        # Correct for camera offset from robot center.
-        cos_t = np.cos(robot_theta)
-        sin_t = np.sin(robot_theta)
-        robot_x = cam_field_x - (CAMERA_OFFSET_X * cos_t - CAMERA_OFFSET_Y * sin_t)
-        robot_y = cam_field_y - (CAMERA_OFFSET_X * sin_t + CAMERA_OFFSET_Y * cos_t)
-
         if debug:
-            print(f"  [debug] R_tag_to_field:\n{R_tag_to_field}")
-            print(f"  [debug] pose_R:\n{tag.pose_R}")
-            print(f"  [debug] R_cam_to_field:\n{R_cam_to_field}")
-            print(f"  [debug] tag_in_field_offset: ({tag_in_field_offset[0]:.4f}, {tag_in_field_offset[1]:.4f}, {tag_in_field_offset[2]:.4f})")
-            print(f"  [debug] cam_pos: ({cam_field_x:.4f}, {cam_field_y:.4f})")
-            print(f"  [debug] cam_heading: {camera_heading:.4f}  robot_theta: {robot_theta:.4f}")
+            print(f"  [debug] T_field_tag:\n{T_field_tag}")
+            print(f"  [debug] T_camera_tag:\n{T_camera_tag}")
+            print(f"  [debug] T_tag_camera:\n{T_tag_camera}")
+            print(f"  [debug] T_field_camera:\n{T_field_camera}")
+            print(f"  [debug] T_robot_camera:\n{T_robot_camera}")
+            print(f"  [debug] T_field_robot:\n{T_field_robot}")
+            print(f"  [debug] robot pos: ({robot_x:.4f}, {robot_y:.4f}, {robot_theta:.4f})")
 
         return robot_x, robot_y, robot_theta
 
